@@ -62,7 +62,8 @@ icu_locales: en,root
 - 将 `-latomic` 的链接范围限定到正确 toolset；
 - 使用 Android target flavor；
 - Node stdout/stderr 写入 App 私有文件 `files/node-output.log`；
-- 保持 ARM64 ELF 的所有 `PT_LOAD` 为 `0x4000` 对齐，以支持 16 KB page size。
+- 构建后由 `scripts/verify-apk-16kb.sh` 强制检查 APK 内所有 ARM64 ELF 的
+  `PT_LOAD` 至少为 `0x4000` 对齐，以支持 16 KB page size。
 
 ## 产物
 
@@ -187,7 +188,8 @@ adb -s emulator-5554 shell run-as com.chef25.mobile.nodespike \
 - 没有在物理 Android 手机、低内存设备或不同厂商 ROM 上安装运行。
 - 30 秒 Home 切后台通过不能证明长期后台、Doze、系统回收或息屏后持续服务。
 - 当前没有 Android foreground service、notification、wake lock 或后台保活策略。
-- 没有完成 release 签名、App Bundle、Play Store、隐私清单或 16 KB 真机兼容验收。
+- 当前没有 App Bundle、Play Store 或实体 Android 设备验收；16 KB 构建已在本机
+  Android 16 Page Size 16 KB 模拟器安装，并以最终产物继续复验。
 - 没有验证 x86_64、32 位 ARM 或非 arm64 ABI。
 - 没有逐一验证 SillyTavern 的全部扩展、插件、供应商 API、媒体处理和 WebAssembly 功能。
 - 当前 253,594,033 字节的 APK 只是内嵌完整运行时和依赖的可行性产物，不能直接视为产品包设计。

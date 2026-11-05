@@ -21,6 +21,7 @@
 
 发布流水线升级并锁定 Node.js `24.22.1` mobile runtime。它承接上一轮 Node.js
 `24.5.0` 的可行性结果，但仍需在合并前通过新的 GitHub Actions 和真机复验。
+Android 构建会校验 APK ZIP 与全部 native `PT_LOAD` 段的 16 KB 页对齐。
 
 当前移动外壳提供精简启动页、数据目录复制、中文文档和运行时信息。
 Desktop 的端口编辑、ZIP 导入导出、数据重置和更新功能尚未移植到这个移动可行性版本。

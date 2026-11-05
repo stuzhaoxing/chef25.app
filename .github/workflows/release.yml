@@ -38,6 +38,7 @@ jobs:
       - run: npm run validate
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - run: bash -n spike/android-node-runtime/build-apk.sh
+      - run: bash -n scripts/verify-apk-16kb.sh
       - run: python3 -m py_compile deploy/publish-mobile-r2.py
       - id: version
         run: |
@@ -179,6 +180,7 @@ jobs:
           fi
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$source"
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$source"
+          scripts/verify-apk-16kb.sh "$source"
           mkdir -p artifacts/android
           target="artifacts/android/Chef25_${{ needs.validate.outputs.version }}_android-arm64.apk"
           cp "$source" "$target"

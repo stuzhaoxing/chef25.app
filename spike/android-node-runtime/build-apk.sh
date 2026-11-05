@@ -118,4 +118,6 @@ if [[ ! -f "$APK_PATH" ]]; then
     exit 1
 fi
 
+"$REPO_ROOT/scripts/verify-apk-16kb.sh" "$APK_PATH"
+
 printf '%s\n' "$APK_PATH"

@@ -27,6 +27,7 @@ jobs:
       - run: npm run validate
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - run: bash -n spike/android-node-runtime/build-apk.sh
+      - run: bash -n scripts/verify-apk-16kb.sh
       - run: python3 -m py_compile deploy/publish-mobile-r2.py
       - run: python3 -m json.tool runtime.lock.json >/dev/null
       - run: python3 -m json.tool mobile-version.json >/dev/null
@@ -72,6 +73,7 @@ jobs:
           apk=spike/android-node-runtime/app/build/outputs/apk/debug/app-debug.apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$apk"
+          scripts/verify-apk-16kb.sh "$apk"
           mkdir -p artifacts/android-debug
           cp "$apk" artifacts/android-debug/
           sha256sum "$apk" | awk '{print $1}' > artifacts/android-debug/SHA256
