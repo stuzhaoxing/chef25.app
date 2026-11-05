@@ -229,6 +229,32 @@ jobs:
           security set-key-partition-list \
             -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain" \
+            | grep -q "Apple Distribution: Hangzhou Like Network Technology Company Limited (VF5G223CGD)"
+      - name: Import App Store provisioning profile
+        if: inputs.publish || inputs.testflight_only
+        shell: bash
+        env:
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          profile="$RUNNER_TEMP/chef25-app-store.mobileprovision"
+          printf '%s' "$APPLE_PROVISIONING_PROFILE_BASE64" \
+            | base64 --decode > "$profile"
+          test -s "$profile"
+          security cms -D -i "$profile" > "$RUNNER_TEMP/chef25-profile.plist"
+          profile_name=$(/usr/libexec/PlistBuddy \
+            -c 'Print :Name' "$RUNNER_TEMP/chef25-profile.plist")
+          application_identifier=$(/usr/libexec/PlistBuddy \
+            -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/chef25-profile.plist")
+          get_task_allow=$(/usr/libexec/PlistBuddy \
+            -c 'Print :Entitlements:get-task-allow' "$RUNNER_TEMP/chef25-profile.plist")
+          test "$profile_name" = "Chef25 Mobile App Store"
+          test "$application_identifier" = "VF5G223CGD.com.chef25.mobile.node-spike"
+          test "$get_task_allow" = "false"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/Chef25 Mobile App Store.mobileprovision"
+          printf 'IOS_PROVISIONING_PROFILE_NAME=%s\n' "$profile_name" >> "$GITHUB_ENV"
       - name: Prepare App Store Connect API key
         if: inputs.publish || inputs.testflight_only
         shell: bash
@@ -262,7 +288,9 @@ jobs:
           if [[ "$PUBLISH" == "true" ]]; then
             args+=(
               DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
-              -allowProvisioningUpdates
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="Apple Distribution"
+              PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_NAME"
               -authenticationKeyPath "$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
               -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID"
               -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
@@ -287,17 +315,29 @@ jobs:
           <plist version="1.0"><dict>
             <key>destination</key><string>export</string>
             <key>method</key><string>app-store-connect</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key><dict>
+              <key>com.chef25.mobile.node-spike</key><string>$IOS_PROVISIONING_PROFILE_NAME</string>
+            </dict>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>uploadSymbols</key><true/>
           </dict></plist>
           PLIST
+          app="$RUNNER_TEMP/Chef25.xcarchive/Products/Applications/Chef25NodeSpike.app"
+          test -d "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          signing_details=$(codesign -d --verbose=4 "$app" 2>&1)
+          grep -q '^Authority=Apple Distribution:' <<< "$signing_details"
+          if grep -q '^Authority=Apple Development:' <<< "$signing_details"; then
+            echo "Archive contains a development signature" >&2
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/export"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/Chef25.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8" \
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"

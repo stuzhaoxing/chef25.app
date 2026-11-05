@@ -52,6 +52,7 @@ Secrets：
 | --- | --- |
 | `APPLE_DISTRIBUTION_CERTIFICATE_BASE64` | Apple Distribution `.p12` 的 base64 |
 | `APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD` | `.p12` 密码 |
+| `APPLE_PROVISIONING_PROFILE_BASE64` | `com.chef25.mobile.node-spike` 的 App Store Distribution profile |
 | `APP_STORE_CONNECT_KEY_ID` | App Store Connect API Key ID |
 | `APP_STORE_CONNECT_ISSUER_ID` | API Issuer ID |
 | `APP_STORE_CONNECT_PRIVATE_KEY_BASE64` | `AuthKey_<id>.p8` 的 base64 |
@@ -64,7 +65,10 @@ Secrets：
 
 API Key 需要可管理 App ID、证书、Provisioning Profile 和 TestFlight 的权限。
 App Store Connect 中必须已有 Bundle ID `com.chef25.mobile.node-spike` 和 App 记录，
-并允许 Xcode automatic signing 创建 App Store Distribution profile。
+归档使用 profile `Chef25 Mobile App Store` 和显式 `Apple Distribution` 身份；工作流会
+校验 profile 对应上述 Bundle ID、不是 development profile，并在导出前拒绝仍含
+`Apple Development` 签名的 archive。签名 profile 到期或 Apple Distribution 证书
+重建后，需要同步更新 GitHub Environment 中的 profile 和证书 Secret。
 
 ## TestFlight 公开链接
 
