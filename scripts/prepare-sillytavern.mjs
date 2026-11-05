@@ -78,7 +78,9 @@ execFileSync(
 await rm(destination, { recursive: true, force: true });
 await cp(source, destination, {
   recursive: true,
-  filter: (file) => path.basename(file) !== ".git",
+  // App Store bundles reject symlinks. npm's .bin directories only hold
+  // command-line shims, so they are not needed by the embedded server.
+  filter: (file) => ![".git", ".bin"].includes(path.basename(file)),
 });
 
 const runtimeDirectory = path.join(destination, ".chef25-runtime");
