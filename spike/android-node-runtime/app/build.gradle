@@ -1,0 +1,77 @@
+import java.util.Locale
+
+plugins {
+    id 'com.android.application'
+}
+
+def releaseStoreFile = System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseTaskRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains('release')
+}
+if (releaseTaskRequested && !releaseStoreFile) {
+    throw new GradleException('ANDROID_KEYSTORE_PATH is required for a release build')
+}
+
+android {
+    namespace 'com.chef25.mobile.nodespike'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.chef25.mobile.nodespike'
+        minSdk 24
+        targetSdk 36
+        versionCode Integer.parseInt(
+            (rootProject.findProperty('chef25VersionCode') ?: '1').toString()
+        )
+        versionName (
+            rootProject.findProperty('chef25VersionName') ?: '0.1.0'
+        ).toString()
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+            }
+        }
+    }
+
+    signingConfigs {
+        if (releaseStoreFile) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseStoreFile) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    androidResources {
+        noCompress 'zip'
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+}

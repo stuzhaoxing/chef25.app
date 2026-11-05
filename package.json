@@ -1,0 +1,16 @@
+{
+  "name": "chef25-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "runtime:fetch": "node scripts/fetch-node-mobile.mjs",
+    "runtime:prepare": "node scripts/prepare-sillytavern.mjs",
+    "android:debug": "bash spike/android-node-runtime/build-apk.sh debug",
+    "android:release": "bash spike/android-node-runtime/build-apk.sh release"
+  },
+  "engines": {
+    "node": ">=24.5.0"
+  }
+}

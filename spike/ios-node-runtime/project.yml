@@ -1,0 +1,64 @@
+name: Chef25Mobile
+options:
+  bundleIdPrefix: com.chef25.mobile
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+targets:
+  Chef25:
+    type: application
+    platform: iOS
+    sources:
+      - path: AppDelegate.swift
+      - path: NodeRunner.m
+      - path: NodeRunner.h
+      - path: Assets.xcassets
+      - path: PrivacyInfo.xcprivacy
+    dependencies:
+      - framework: ../../.build/nodejs-mobile/ios/NodeMobile.xcframework
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chef25.mobile.node-spike
+        PRODUCT_NAME: Chef25NodeSpike
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_OBJC_BRIDGING_HEADER: NodeRunner.h
+        OTHER_LDFLAGS: "$(inherited) -ObjC"
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: "NO"
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+        ONLY_ACTIVE_ARCH: "YES"
+      configs:
+        Release:
+          SWIFT_COMPILATION_MODE: wholemodule
+    preBuildScripts:
+      - name: Embed SillyTavern runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          REPO_ROOT="$SRCROOT/../.."
+          SOURCE="$REPO_ROOT/.build/sillytavern-ios"
+          DESTINATION="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/nodejs-project"
+          test -f "$SOURCE/server.js"
+          rm -rf "$DESTINATION"
+          mkdir -p "$DESTINATION"
+          ditto "$SOURCE" "$DESTINATION"
+schemes:
+  Chef25:
+    build:
+      targets:
+        Chef25: all
+    run:
+      config: Debug
+    archive:
+      config: Release

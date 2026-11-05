@@ -1,0 +1,27 @@
+{
+  "nodeVersion": "24.22.1",
+  "nodeMobileVersion": "24.22.1-0",
+  "nodeMobile": {
+    "repository": "fogtape/nodejs-mobile",
+    "release": "v24.22.1-0",
+    "commit": "b5bcc8d8e70f055333cd5efc317e3eb55bf0c9a5",
+    "upstreamTag": "v24.22.1",
+    "upstreamCommit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
+    "platforms": {
+      "android-arm64": {
+        "url": "https://github.com/fogtape/nodejs-mobile/releases/download/v24.22.1-0/nodejs-mobile-android-24.22.1-0.zip",
+        "sha256": "d6fd9f610fe5d81fede8f0d400c5a62723247725a19831835f15abf4f0604250"
+      },
+      "ios-arm64": {
+        "url": "https://github.com/fogtape/nodejs-mobile/releases/download/v24.22.1-0/nodejs-mobile-ios-24.22.1-0.zip",
+        "sha256": "3fa1b8fb0720768b01c2e0dae3a17e788476e8c1613a1d9a54e206793b45326e"
+      }
+    }
+  },
+  "sillyTavern": {
+    "repository": "SillyTavern/SillyTavern",
+    "version": "1.19.0",
+    "commit": "7e8663cd9c184a550b37238218bdd32c6efc68e9"
+  },
+  "jsTiktokenVersion": "1.0.21"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "chef25-js-tiktoken",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "js-tiktoken": "1.0.21"
+  }
+}
