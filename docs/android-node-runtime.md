@@ -2,9 +2,10 @@
 
 ## 结论
 
-原版 SillyTavern 服务端可以编译进 Android App，在 App 进程内启动 Node.js
-`v24.5.0`，由 `WebView` 加载 `127.0.0.1:8123` 上的原版 UI。2026-11-04 已在 Android 16
-arm64 模拟器完成启动、Custom API 流式请求、聊天落盘、进程重启和 30 秒前后台恢复验证。
+原版 SillyTavern 服务端可以编译进 Android App，在 App 进程内启动 Node.js，由
+`WebView` 加载 `127.0.0.1:8123` 上的原版 UI。当前发布流水线固定 Node.js `24.22.1`
+和 SillyTavern `1.19.0`。2026-11-05 已在 Android 16 KB page size arm64 模拟器完成
+签名发布包、Custom API 流式回复、聊天落盘、Activity 重建、进程重启和 30 秒后台恢复验证。
 
 App 现在先显示 25小厨移动端首页，点击「一键启动酒馆」后才启动运行时；运行就绪后再由
 「进入酒馆」打开原版页面。外壳复用 Desktop 的 ChefHat Logo、厨师帽吉祥物、品牌色、
@@ -20,8 +21,24 @@ App 现在先显示 25小厨移动端首页，点击「一键启动酒馆」后�
 编辑、ZIP 导入导出、重置和更新功能尚未移植。测试 Intent 含
 `CHEF25_UI_TEST_MESSAGE` 时自动启动，便于既有 UI 自动化，不影响普通启动流程。
 
-这证明的是可行性 harness，不是可发布客户端。当前只有一个 arm64 debug APK，Node 服务与
-`Activity` 同进程，尚无独立前台服务、发布签名、应用商店分发或长期后台保障。
+当前是可发布的开发预览。Android 发布包使用独立密钥签名，Node 服务仍与
+`Activity` 同进程；尚无独立前台服务、应用商店分发或长期后台保障。
+
+## 0.1.2 lifecycle repair
+
+0.1.1 在关闭 `Activity`、保留进程后重新打开页面时，会尝试在同一进程中第二次调用
+`node::Start`，最终触发 `SIGABRT`。0.1.2 将 Node runtime 的可恢复状态保存在进程级
+单例中，并让重建后的 `Activity` 重新连接已运行的实例，而不是再次启动 Node。
+
+0.1.2 debug 包在 `versionCode=12`、Android 16 arm64 16 KB page size 模拟器上验证：
+
+- Activity 关闭后 PID 保持为 `7508`，WARM 重启后仍为同一 PID；
+- 日志中没有第二次 `node::Start`、`SIGABRT` 或 `FATAL EXCEPTION`；
+- 重新进入后恢复此前写入的 JSONL 聊天；
+- Custom API 收到包含真实用户消息、模型 `chef25-local-fake` 和 `stream: true` 的请求；
+- 页面收到并渲染 SSE 助手回复；
+- Home 切后台 30 秒后 PID 不变，回到前台恢复同一聊天；
+- 酒馆 `WebView` 使用 `[0,132][1080,2337]`，仅额外保留「‹ 小厨」返回入口。
 
 ## 固定输入
 
@@ -62,6 +79,8 @@ icu_locales: en,root
 - 将 `-latomic` 的链接范围限定到正确 toolset；
 - 使用 Android target flavor；
 - Node stdout/stderr 写入 App 私有文件 `files/node-output.log`；
+- Node runtime 是 Android 进程内的单例。Activity 被重建或从首页重新打开时复用原来的
+  `node::Start` 实例，避免第二次启动同一个进程内的 Node.js 而触发原生退出；
 - 构建后由 `scripts/verify-apk-16kb.sh` 强制检查 APK 内所有 ARM64 ELF 的
   `PT_LOAD` 至少为 `0x4000` 对齐，以支持 16 KB page size。
 

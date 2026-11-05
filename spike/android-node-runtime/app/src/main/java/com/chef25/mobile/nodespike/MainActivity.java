@@ -69,6 +69,13 @@ public final class MainActivity extends Activity {
     private static final int AMBER = Color.rgb(216, 155, 77);
     private static final int ERROR = Color.rgb(180, 61, 50);
 
+    // node::Start cannot be called twice in one process. Keep the embedded
+    // runtime alive when Android recreates the Activity and reconnect the new
+    // UI to that same Node.js instance.
+    private static volatile boolean nodeRuntimeStarted;
+    private static volatile boolean nodeRuntimeReady;
+    private static volatile String nodeRuntimeFailure;
+
     static {
         System.loadLibrary("native-lib");
         System.loadLibrary("node");
@@ -104,6 +111,7 @@ public final class MainActivity extends Activity {
     private boolean tavernEntered;
     private boolean docsLoaded;
     private boolean automationStarted;
+    private volatile boolean activityDestroyed;
     private int safeTop;
     private int safeBottom;
 
@@ -115,6 +123,7 @@ public final class MainActivity extends Activity {
         configureViews();
         configureSystemBars();
         showTab(0);
+        restoreNodeRuntimeState();
         if (getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null) {
             startRuntime();
         }
@@ -157,6 +166,8 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        activityDestroyed = true;
+        mainHandler.removeCallbacksAndMessages(null);
         startupExecutor.shutdownNow();
         if (tavernWebView != null) {
             tavernWebView.destroy();
@@ -718,11 +729,29 @@ public final class MainActivity extends Activity {
 
     private void startRuntime() {
         if (runtimeStarted) {
+            restoreNodeRuntimeState();
+            enterTavernForTestIntent();
             return;
         }
+        if (nodeRuntimeStarted) {
+            runtimeStarted = true;
+            restoreNodeRuntimeState();
+            enterTavernForTestIntent();
+            return;
+        }
+        nodeRuntimeStarted = true;
         runtimeStarted = true;
         updateRuntimeState(RuntimeState.STARTING);
         startupExecutor.execute(this::prepareAndStartRuntime);
+    }
+
+    private void enterTavernForTestIntent() {
+        if (
+            runtimeReady
+                && getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null
+        ) {
+            enterTavern();
+        }
     }
 
     private void prepareAndStartRuntime() {
@@ -761,12 +790,10 @@ public final class MainActivity extends Activity {
                 try {
                     int result = startNodeWithArguments(arguments, getFilesDir().getAbsolutePath());
                     Log.i(TAG, "Node runtime exited with code " + result);
+                    failNodeRuntime("Node.js 已退出：" + result);
                 } catch (Throwable error) {
                     Log.e(TAG, "Node runtime failed", error);
-                    mainHandler.post(() -> updateRuntimeState(new RuntimeState(
-                        "FAILED",
-                        "Node.js 启动失败：" + error.getMessage()
-                    )));
+                    failNodeRuntime("Node.js 启动失败：" + error.getMessage());
                 }
             }, "Chef25 Node.js");
             nodeThread.setDaemon(false);
@@ -775,10 +802,7 @@ public final class MainActivity extends Activity {
             mainHandler.post(this::pollReadiness);
         } catch (Throwable error) {
             Log.e(TAG, "Runtime preparation failed", error);
-            mainHandler.post(() -> updateRuntimeState(new RuntimeState(
-                "FAILED",
-                "启动失败：" + error.getMessage()
-            )));
+            failNodeRuntime("启动失败：" + error.getMessage());
         }
     }
 
@@ -829,11 +853,11 @@ public final class MainActivity extends Activity {
     }
 
     private void pollReadiness() {
+        if (activityDestroyed) {
+            return;
+        }
         if (readinessAttempts++ >= 240) {
-            updateRuntimeState(new RuntimeState(
-                "FAILED",
-                "等待 SillyTavern 监听超时，请查看 logcat。"
-            ));
+            failNodeRuntime("等待 SillyTavern 监听超时，请查看 logcat。");
             return;
         }
 
@@ -859,7 +883,12 @@ public final class MainActivity extends Activity {
 
             boolean runtimeReady = ready;
             mainHandler.post(() -> {
+                if (activityDestroyed) {
+                    return;
+                }
                 if (runtimeReady) {
+                    nodeRuntimeReady = true;
+                    nodeRuntimeFailure = null;
                     updateRuntimeState(RuntimeState.RUNNING);
                     if (getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null) {
                         enterTavern();
@@ -868,6 +897,36 @@ public final class MainActivity extends Activity {
                     mainHandler.postDelayed(this::pollReadiness, 500);
                 }
             });
+        });
+    }
+
+    private void restoreNodeRuntimeState() {
+        if (nodeRuntimeFailure != null) {
+            runtimeStarted = true;
+            updateRuntimeState(new RuntimeState("FAILED", nodeRuntimeFailure));
+            return;
+        }
+        if (nodeRuntimeReady) {
+            runtimeStarted = true;
+            updateRuntimeState(RuntimeState.RUNNING);
+            return;
+        }
+        if (nodeRuntimeStarted) {
+            runtimeStarted = true;
+            updateRuntimeState(RuntimeState.STARTING);
+            pollReadiness();
+        }
+    }
+
+    private void failNodeRuntime(String message) {
+        nodeRuntimeFailure = message;
+        if (activityDestroyed) {
+            return;
+        }
+        mainHandler.post(() -> {
+            if (!activityDestroyed) {
+                updateRuntimeState(new RuntimeState("FAILED", message));
+            }
         });
     }
 

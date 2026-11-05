@@ -28,7 +28,7 @@ targets:
         PRODUCT_NAME: Chef25NodeSpike
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
-        MARKETING_VERSION: "0.1.1"
+        MARKETING_VERSION: "0.1.2"
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic

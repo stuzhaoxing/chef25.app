@@ -24,7 +24,7 @@ android {
             (rootProject.findProperty('chef25VersionCode') ?: '1').toString()
         )
         versionName (
-            rootProject.findProperty('chef25VersionName') ?: '0.1.1'
+            rootProject.findProperty('chef25VersionName') ?: '0.1.2'
         ).toString()
 
         ndk {
