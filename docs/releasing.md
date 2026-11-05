@@ -14,7 +14,8 @@ Ubuntu/macOS runner 中构建 Android debug APK 与 iOS Simulator App。
 3. 从固定 commit 获取 SillyTavern `1.19.0`，安装生产依赖并应用 mobile runtime 适配；
    打包时移除非运行时需要的 `node_modules/.bin` 链接，避免 App Store 因 bundle 内
    symbolic link 拒绝 IPA；
-4. 用 XcodeGen 生成 iOS 工程，归档兼容 TestFlight 的 App；
+4. 用 macOS 26 runner 上的 Xcode 26+ / iOS 26+ SDK 生成 iOS 工程，归档兼容
+   TestFlight 的 App；工具链低于 iOS 26 SDK 时在归档前停止；
 5. 构建并验证 Android release APK、APK v2 签名、SHA-256 和 16 KB 对齐；
 6. 勾选 `testflight_only` 时仅签名 iPhone 构建并上传 TestFlight，不要求公开链接或 R2；
 7. 勾选 `publish` 时上传 iPhone 构建到 TestFlight，把 Android APK、完整清单、

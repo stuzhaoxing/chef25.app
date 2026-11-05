@@ -194,7 +194,7 @@ jobs:
 
   ios:
     needs: validate
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 75
     environment: mobile-release
     steps:
@@ -206,6 +206,14 @@ jobs:
           node-version: 24.22.1
       - run: node scripts/fetch-node-mobile.mjs ios
       - run: node scripts/prepare-sillytavern.mjs ios
+      - name: Verify App Store toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sdk_version=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK $sdk_version"
+          test "${sdk_version%%.*}" -ge 26
       - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Generate Xcode project
         working-directory: spike/ios-node-runtime
