@@ -17,7 +17,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 
-final class RuntimeViewController: UIViewController, WKNavigationDelegate {
+final class RuntimeViewController: UIViewController, WKNavigationDelegate, UIGestureRecognizerDelegate {
     private enum Palette {
         static let paper = UIColor(red: 0.984, green: 0.976, blue: 0.961, alpha: 1)
         static let sidebar = UIColor(red: 0.953, green: 0.945, blue: 0.914, alpha: 1)
@@ -31,9 +31,19 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         static let amber = UIColor(red: 0.847, green: 0.608, blue: 0.302, alpha: 1)
     }
 
+    private let mainPane = UIView()
+    private let mainContent = UIView()
+    private let drawerDismiss = UIButton(type: .custom)
+    private var drawerProgress: CGFloat = 0
+    private var drawerGestureStart: CGFloat = 0
     private let header = UIView()
     private let contentContainer = UIView()
-    private let tabBar = UIStackView()
+    private let drawerOverlay = UIView()
+    private let drawerPanel = UIView()
+    private let drawerMenu = UIStackView()
+    private let menuButton = UIButton(type: .system)
+    private let mascot = ChefMascotView()
+    private var drawerOpen = false
     private let homeButton = UIButton(type: .system)
     private let pageTitle = UILabel()
     private let pageSubtitle = TavernBrandView()
@@ -44,19 +54,18 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     private let docsWebView = WKWebView(frame: .zero)
     private let tavernWebView = WKWebView(frame: .zero)
 
-    private let statusCard = UIView()
-    private let statusDot = UIView()
-    private let statusTitle = UILabel()
     private let primaryButton = UIButton(type: .system)
+    private var resetBusy = false
+    private lazy var resetButton = makeSecondaryButton(title: "重置本地数据", image: "trash")
+    private var resetMarker: URL { dataRoot.deletingLastPathComponent().appendingPathComponent("chef25-reset-pending") }
+    private var resetPending: Bool { FileManager.default.fileExists(atPath: resetMarker.path) }
     private let settingsRuntimeValue = UILabel()
     private let settingsStatusValue = UILabel()
 
     private var tabButtons: [UIButton] = []
     private var contentTopWithHeader: NSLayoutConstraint!
     private var contentTopFull: NSLayoutConstraint!
-    private var contentBottomWithTabs: NSLayoutConstraint!
     private var contentBottomFull: NSLayoutConstraint!
-    private var tabHeightConstraint: NSLayoutConstraint!
     private var currentTab = 0
     private var runtimeStarted = false
     private var runtimeReady = false
@@ -79,15 +88,35 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = Palette.paper
+        mainContent.backgroundColor = Palette.paper
+        mainPane.translatesAutoresizingMaskIntoConstraints = false
+        mainContent.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(mainPane)
+        mainPane.addSubview(mainContent)
+        mainContent.clipsToBounds = true
+        NSLayoutConstraint.activate([
+            mainPane.topAnchor.constraint(equalTo: view.topAnchor),
+            mainPane.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            mainPane.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            mainPane.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            mainContent.topAnchor.constraint(equalTo: mainPane.topAnchor),
+            mainContent.bottomAnchor.constraint(equalTo: mainPane.bottomAnchor),
+            mainContent.leadingAnchor.constraint(equalTo: mainPane.leadingAnchor),
+            mainContent.trailingAnchor.constraint(equalTo: mainPane.trailingAnchor),
+        ])
         configureHeader()
-        configureTabBar()
         configureContent()
         configureLauncher()
         configureDataPage()
         configureSettingsPage()
         configureWebViews()
+        configureDrawer()
         refreshNavigation()
 
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshMascotMotion),
+            name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationDidBecomeActive),
@@ -95,20 +124,38 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
             object: nil
         )
 
+        if resetPending {
+            performLocalReset()
+            return
+        }
+
         if ProcessInfo.processInfo.environment["CHEF25_AUTO_START"] == "1"
             || ProcessInfo.processInfo.environment["CHEF25_UI_TEST_MESSAGE"] != nil {
             startRuntime()
         }
     }
 
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        setDrawer(open: false, animated: false)
+        super.viewWillTransition(to: size, with: coordinator)
+    }
+
     deinit {
+        mascot.setAnimating(false)
         NotificationCenter.default.removeObserver(self)
     }
 
     private func configureHeader() {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.backgroundColor = Palette.sidebar
-        view.addSubview(header)
+        mainContent.addSubview(header)
+
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
+        menuButton.setImage(UIImage(systemName: "line.3.horizontal"), for: .normal)
+        menuButton.tintColor = Palette.ink
+        menuButton.accessibilityLabel = "展开菜单"
+        menuButton.addTarget(self, action: #selector(openDrawer), for: .touchUpInside)
+        header.addSubview(menuButton)
 
         let brandMark = BrandMarkView()
         brandMark.translatesAutoresizingMaskIntoConstraints = false
@@ -147,26 +194,22 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         pageCopy.addArrangedSubview(pageSubtitle)
         header.addSubview(pageCopy)
 
-        let aboutButton = UIButton(type: .system)
-        aboutButton.translatesAutoresizingMaskIntoConstraints = false
-        aboutButton.setImage(UIImage(systemName: "info.circle"), for: .normal)
-        aboutButton.tintColor = Palette.muted
-        aboutButton.accessibilityLabel = "关于"
-        aboutButton.addTarget(self, action: #selector(showAbout), for: .touchUpInside)
-        header.addSubview(aboutButton)
-
         let divider = UIView()
         divider.translatesAutoresizingMaskIntoConstraints = false
         divider.backgroundColor = Palette.line
         header.addSubview(divider)
 
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            header.topAnchor.constraint(equalTo: mainContent.safeAreaLayoutGuide.topAnchor),
+            header.leadingAnchor.constraint(equalTo: mainContent.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: mainContent.trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: 64),
 
-            brandMark.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 18),
+            menuButton.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 4),
+            menuButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            menuButton.widthAnchor.constraint(equalToConstant: 44),
+            menuButton.heightAnchor.constraint(equalToConstant: 44),
+            brandMark.leadingAnchor.constraint(equalTo: menuButton.trailingAnchor, constant: 2),
             brandMark.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             brandMark.widthAnchor.constraint(equalToConstant: 36),
             brandMark.heightAnchor.constraint(equalToConstant: 36),
@@ -174,12 +217,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
             brandCopy.leadingAnchor.constraint(equalTo: brandMark.trailingAnchor, constant: 10),
             brandCopy.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
-            aboutButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -14),
-            aboutButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            aboutButton.widthAnchor.constraint(equalToConstant: 36),
-            aboutButton.heightAnchor.constraint(equalToConstant: 36),
-
-            pageCopy.trailingAnchor.constraint(equalTo: aboutButton.leadingAnchor, constant: -8),
+            pageCopy.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -18),
             pageCopy.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             pageCopy.leadingAnchor.constraint(greaterThanOrEqualTo: brandCopy.trailingAnchor, constant: 8),
 
@@ -192,18 +230,17 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
 
     private func configureContent() {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(contentContainer)
+        mainContent.addSubview(contentContainer)
         contentTopWithHeader = contentContainer.topAnchor.constraint(equalTo: header.bottomAnchor)
-        contentTopFull = contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
-        contentBottomWithTabs = contentContainer.bottomAnchor.constraint(equalTo: tabBar.topAnchor)
+        contentTopFull = contentContainer.topAnchor.constraint(equalTo: mainContent.safeAreaLayoutGuide.topAnchor)
         contentBottomFull = contentContainer.bottomAnchor.constraint(
-            equalTo: view.safeAreaLayoutGuide.bottomAnchor
+            equalTo: mainContent.safeAreaLayoutGuide.bottomAnchor
         )
         NSLayoutConstraint.activate([
             contentTopWithHeader,
-            contentBottomWithTabs,
-            contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentBottomFull,
+            contentContainer.leadingAnchor.constraint(equalTo: mainContent.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: mainContent.trailingAnchor),
         ])
         [
             launcherScroll,
@@ -222,84 +259,287 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
             ])
         }
 
-        homeButton.translatesAutoresizingMaskIntoConstraints = false
-        var homeConfiguration = UIButton.Configuration.filled()
-        homeConfiguration.title = "小厨"
-        homeConfiguration.image = UIImage(systemName: "chevron.left")
-        homeConfiguration.imagePlacement = .leading
-        homeConfiguration.imagePadding = 2
-        homeConfiguration.baseForegroundColor = Palette.accent
-        homeConfiguration.baseBackgroundColor = UIColor(white: 0.09, alpha: 0.86)
+        var homeConfiguration = UIButton.Configuration.plain()
+        homeConfiguration.title = "返回小厨"
+        homeConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming
+            attributes.font = .systemFont(ofSize: 12, weight: .semibold)
+            return attributes
+        }
+        homeConfiguration.baseForegroundColor = Palette.ink
+        homeConfiguration.background.backgroundColor = Palette.paper
         homeConfiguration.cornerStyle = .capsule
         homeConfiguration.contentInsets = NSDirectionalEdgeInsets(
-            top: 6,
+            top: 4,
             leading: 8,
-            bottom: 6,
-            trailing: 9
+            bottom: 4,
+            trailing: 8
         )
         homeButton.configuration = homeConfiguration
         homeButton.accessibilityLabel = "返回小厨"
         homeButton.addTarget(self, action: #selector(returnToLauncher), for: .touchUpInside)
         homeButton.isHidden = true
         contentContainer.addSubview(homeButton)
-        NSLayoutConstraint.activate([
-            homeButton.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -8),
-            homeButton.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
-            homeButton.heightAnchor.constraint(equalToConstant: 34),
-        ])
+        homeButton.layer.shadowColor = UIColor.black.cgColor
+        homeButton.layer.shadowOpacity = 0.22
+        homeButton.layer.shadowRadius = 6
+        homeButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        homeButton.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragHomeButton(_:))))
+
     }
 
-    private func configureTabBar() {
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.axis = .horizontal
-        tabBar.distribution = .fillEqually
-        tabBar.alignment = .fill
-        tabBar.backgroundColor = Palette.sidebar
-        view.addSubview(tabBar)
+    private var homeDockRight = true
+    private var homeVerticalFraction: CGFloat = 0.5
+    private var homeDragOrigin = CGPoint.zero
+    private var homeDragging = false
+    private var homeSnapAnimator: UIViewPropertyAnimator?
 
-        let divider = UIView()
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.backgroundColor = Palette.line
-        view.addSubview(divider)
+    private func boundedHomeOrigin(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: min(max(8, point.x), max(8, contentContainer.bounds.width - homeButton.bounds.width - 8)),
+                y: min(max(8, point.y), max(8, contentContainer.bounds.height - homeButton.bounds.height - 8)))
+    }
 
-        let tabs: [(String, String)] = [
-            ("我的酒馆", "cup.and.saucer.fill"),
-            ("本地数据", "folder.fill"),
-            ("中文文档", "questionmark.circle.fill"),
-            ("设置", "gearshape.fill"),
-        ]
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard !homeDragging, homeSnapAnimator == nil else { return }
+        homeButton.bounds.size = CGSize(width: max(76, homeButton.sizeThatFits(CGSize(width: 200, height: 30)).width), height: 30)
+        positionHomeButton()
+    }
+
+    private func positionHomeButton() {
+        let height = max(0, contentContainer.bounds.height - homeButton.bounds.height - 16)
+        homeButton.frame.origin = boundedHomeOrigin(CGPoint(
+            x: homeDockRight ? contentContainer.bounds.width - homeButton.bounds.width - 8 : 8,
+            y: 8 + height * homeVerticalFraction))
+    }
+
+    @objc private func dragHomeButton(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began {
+            let visibleFrame = homeButton.layer.presentation()?.frame
+            homeSnapAnimator?.stopAnimation(true)
+            homeSnapAnimator = nil
+            if let visibleFrame { homeButton.frame = visibleFrame }
+            homeDragging = true
+            homeDragOrigin = homeButton.frame.origin
+        }
+        if gesture.state == .changed || gesture.state == .began || gesture.state == .ended {
+            let delta = gesture.translation(in: contentContainer)
+            homeButton.frame.origin = boundedHomeOrigin(CGPoint(x: homeDragOrigin.x + delta.x, y: homeDragOrigin.y + delta.y))
+        }
+        if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+            homeDragging = false
+            homeDockRight = homeButton.center.x >= contentContainer.bounds.midX
+            homeVerticalFraction = min(1, max(0, (homeButton.frame.minY - 8) / max(1, contentContainer.bounds.height - homeButton.bounds.height - 16)))
+            guard !UIAccessibility.isReduceMotionEnabled else { positionHomeButton(); return }
+            // Next.js dev indicator uses a roughly 491 ms spring snap.
+            let animator = UIViewPropertyAnimator(duration: 0.49122, dampingRatio: 0.78) { self.positionHomeButton() }
+            homeSnapAnimator = animator
+            animator.addCompletion { [weak self] _ in
+                self?.homeSnapAnimator = nil
+                self?.view.setNeedsLayout()
+            }
+            animator.startAnimation()
+        }
+    }
+
+    private func configureDrawer() {
+        drawerOverlay.translatesAutoresizingMaskIntoConstraints = false
+        drawerOverlay.isHidden = true
+        drawerOverlay.accessibilityViewIsModal = true
+        view.insertSubview(drawerOverlay, belowSubview: mainPane)
+        drawerPanel.translatesAutoresizingMaskIntoConstraints = false
+        drawerPanel.backgroundColor = Palette.paper
+        drawerOverlay.addSubview(drawerPanel)
+        let close = UIButton(type: .system)
+        close.translatesAutoresizingMaskIntoConstraints = false
+        close.setTitle("25小厨", for: .normal)
+        close.contentHorizontalAlignment = .leading
+        close.titleLabel?.font = .systemFont(ofSize: 20, weight: .heavy)
+        let drawerMark = BrandMarkView()
+        drawerMark.translatesAutoresizingMaskIntoConstraints = false
+        drawerPanel.addSubview(drawerMark)
+        close.tintColor = Palette.ink
+        close.accessibilityLabel = "关闭菜单"
+        close.addTarget(self, action: #selector(closeDrawer), for: .touchUpInside)
+        drawerPanel.addSubview(close)
+        drawerMenu.translatesAutoresizingMaskIntoConstraints = false
+        drawerMenu.axis = .vertical
+        drawerMenu.spacing = 8
+        let menuScroll = UIScrollView()
+        menuScroll.translatesAutoresizingMaskIntoConstraints = false
+        drawerPanel.addSubview(menuScroll)
+        menuScroll.addSubview(drawerMenu)
+        let about = UIButton(type: .system)
+        about.translatesAutoresizingMaskIntoConstraints = false
+        var aboutConfig = UIButton.Configuration.plain()
+        aboutConfig.title = "关于"
+        aboutConfig.image = UIImage(systemName: "info.circle")
+        aboutConfig.imagePadding = 12
+        aboutConfig.baseForegroundColor = Palette.muted
+        about.configuration = aboutConfig
+        about.contentHorizontalAlignment = .leading
+        about.addTarget(self, action: #selector(drawerAbout), for: .touchUpInside)
+        drawerPanel.addSubview(about)
+        let tabs = [("我的酒馆", "cup.and.saucer.fill"), ("本地数据", "folder.fill"),
+                    ("中文文档", "questionmark.circle.fill"), ("设置", "gearshape.fill")]
         for (index, tab) in tabs.enumerated() {
             var configuration = UIButton.Configuration.plain()
             configuration.title = tab.0
             configuration.image = UIImage(systemName: tab.1)
-            configuration.imagePlacement = .top
-            configuration.imagePadding = 3
-            configuration.baseForegroundColor = Palette.muted
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 4, bottom: 6, trailing: 4)
-            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
-                var attributes = $0
-                attributes.font = .systemFont(ofSize: 10, weight: .medium)
-                return attributes
-            }
+            configuration.imagePadding = 14
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)
+            configuration.background.cornerRadius = 8
             let button = UIButton(configuration: configuration)
+            button.contentHorizontalAlignment = .leading
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
             button.tag = index
             button.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
-            tabBar.addArrangedSubview(button)
+            drawerMenu.addArrangedSubview(button)
             tabButtons.append(button)
         }
-
-        tabHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 58)
+        let preferredWidth = drawerPanel.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.82)
+        preferredWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            divider.topAnchor.constraint(equalTo: tabBar.topAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
-
-            tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tabBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            tabHeightConstraint,
+            preferredWidth,
+            drawerOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            drawerOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            drawerOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            drawerOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            drawerPanel.topAnchor.constraint(equalTo: drawerOverlay.topAnchor),
+            drawerPanel.bottomAnchor.constraint(equalTo: drawerOverlay.bottomAnchor),
+            drawerPanel.leadingAnchor.constraint(equalTo: drawerOverlay.leadingAnchor),
+            drawerPanel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+            close.topAnchor.constraint(equalTo: drawerPanel.safeAreaLayoutGuide.topAnchor, constant: 8),
+            drawerMark.leadingAnchor.constraint(equalTo: drawerPanel.leadingAnchor, constant: 22),
+            drawerMark.centerYAnchor.constraint(equalTo: close.centerYAnchor),
+            drawerMark.widthAnchor.constraint(equalToConstant: 30),
+            drawerMark.heightAnchor.constraint(equalToConstant: 30),
+            close.leadingAnchor.constraint(equalTo: drawerMark.trailingAnchor, constant: 10),
+            close.trailingAnchor.constraint(equalTo: drawerPanel.trailingAnchor, constant: -16),
+            close.heightAnchor.constraint(equalToConstant: 48),
+            menuScroll.topAnchor.constraint(equalTo: close.bottomAnchor, constant: 20),
+            menuScroll.leadingAnchor.constraint(equalTo: drawerPanel.leadingAnchor, constant: 22),
+            menuScroll.trailingAnchor.constraint(equalTo: drawerPanel.trailingAnchor, constant: -22),
+            menuScroll.bottomAnchor.constraint(equalTo: about.topAnchor, constant: -12),
+            drawerMenu.topAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.topAnchor),
+            drawerMenu.bottomAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.bottomAnchor),
+            drawerMenu.leadingAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.leadingAnchor),
+            drawerMenu.trailingAnchor.constraint(equalTo: menuScroll.contentLayoutGuide.trailingAnchor),
+            drawerMenu.widthAnchor.constraint(equalTo: menuScroll.frameLayoutGuide.widthAnchor),
+            about.leadingAnchor.constraint(equalTo: drawerPanel.leadingAnchor, constant: 22),
+            about.trailingAnchor.constraint(equalTo: drawerPanel.trailingAnchor, constant: -22),
+            about.bottomAnchor.constraint(equalTo: drawerPanel.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            about.heightAnchor.constraint(equalToConstant: 48),
         ])
+        drawerDismiss.translatesAutoresizingMaskIntoConstraints = false
+        drawerDismiss.backgroundColor = .clear
+        drawerDismiss.accessibilityLabel = "关闭侧边栏"
+        drawerDismiss.addTarget(self, action: #selector(closeDrawer), for: .touchUpInside)
+        drawerDismiss.isHidden = true
+        mainContent.addSubview(drawerDismiss)
+        NSLayoutConstraint.activate([
+            drawerDismiss.topAnchor.constraint(equalTo: mainContent.topAnchor),
+            drawerDismiss.bottomAnchor.constraint(equalTo: mainContent.bottomAnchor),
+            drawerDismiss.leadingAnchor.constraint(equalTo: mainContent.leadingAnchor),
+            drawerDismiss.trailingAnchor.constraint(equalTo: mainContent.trailingAnchor),
+        ])
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(drawerPanned(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = self
+        view.addGestureRecognizer(pan)
+        for scroll in [launcherScroll, dataScroll, settingsScroll, docsWebView.scrollView] {
+            scroll.panGestureRecognizer.require(toFail: pan)
+        }
+    }
+
+    @objc private func drawerAbout() {
+        showAbout()
+    }
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        guard let pan = gesture as? UIPanGestureRecognizer,
+              !tavernEntered, presentedViewController == nil else { return false }
+        let velocity = pan.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) * 1.4 else { return false }
+        return drawerOpen ? velocity.x < 0 :
+            pan.location(in: view).x - pan.translation(in: view).x <= 28 && velocity.x > 0
+    }
+
+    @objc private func drawerPanned(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            if let presentation = mainPane.layer.presentation(), drawerPanel.bounds.width > 0 {
+                drawerProgress = max(0, min(1, presentation.transform.m41 / drawerPanel.bounds.width))
+            }
+            mainPane.layer.removeAllAnimations()
+            drawerPanel.layer.removeAllAnimations()
+            drawerGestureStart = drawerProgress
+            view.layoutIfNeeded()
+            renderDrawer(drawerProgress)
+            drawerOverlay.isHidden = false
+            drawerDismiss.isHidden = false
+            mascot.setAnimating(false)
+        case .changed:
+            renderDrawer(max(0, min(1, drawerGestureStart + pan.translation(in: view).x / drawerPanel.bounds.width)))
+        case .ended:
+            let velocity = pan.velocity(in: view).x
+            setDrawer(open: velocity > 250 || (velocity >= -250 && drawerProgress > 0.5))
+        case .cancelled, .failed:
+            setDrawer(open: drawerOpen)
+        default: break
+        }
+    }
+
+    private func renderDrawer(_ progress: CGFloat) {
+        drawerProgress = progress
+        let width = drawerPanel.bounds.width
+        mainPane.transform = CGAffineTransform(translationX: width * progress, y: 0)
+        drawerPanel.transform = CGAffineTransform(translationX: width * (progress - 1), y: 0)
+        mainContent.layer.cornerRadius = progress > 0 ? 22 : 0
+        mainPane.layer.shadowColor = UIColor.black.cgColor
+        mainPane.layer.shadowOffset = CGSize(width: -6, height: 0)
+        mainPane.layer.shadowRadius = 14
+        mainPane.layer.shadowOpacity = progress > 0 ? 0.14 : 0
+    }
+
+    @objc private func openDrawer() { setDrawer(open: true) }
+    @objc private func closeDrawer() { setDrawer(open: false) }
+
+    private func setDrawer(open: Bool, animated: Bool = true) {
+        guard !(open && tavernEntered) else { return }
+        drawerOpen = open
+        view.layoutIfNeeded()
+        renderDrawer(drawerProgress)
+        drawerOverlay.isHidden = false
+        drawerDismiss.isHidden = false
+        header.accessibilityElementsHidden = open
+        contentContainer.accessibilityElementsHidden = open
+        UIView.animate(withDuration: animated && !UIAccessibility.isReduceMotionEnabled ? (open ? 0.28 : 0.22) : 0,
+            delay: 0, options: [.beginFromCurrentState, .curveEaseOut], animations: {
+                self.renderDrawer(open ? 1 : 0)
+            }, completion: { _ in
+                guard self.drawerOpen == open else { return }
+                self.drawerOverlay.isHidden = !open
+                self.drawerDismiss.isHidden = !open
+                UIAccessibility.post(notification: .screenChanged, argument: open ? self.tabButtons[self.currentTab] : self.menuButton)
+            })
+        refreshMascotMotion()
+    }
+
+    override func accessibilityPerformEscape() -> Bool {
+        guard drawerOpen else { return false }
+        closeDrawer()
+        return true
+    }
+
+    @objc private func applicationWillResignActive() {
+        setDrawer(open: false, animated: false)
+        mascot.setAnimating(false)
+    }
+
+    @objc private func refreshMascotMotion() {
+        mascot.setAnimating(currentTab == 0 && !tavernEntered && !drawerOpen
+            && UIApplication.shared.applicationState == .active && !UIAccessibility.isReduceMotionEnabled)
     }
 
     private func configureLauncher() {
@@ -311,7 +551,12 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         stack.axis = .vertical
         stack.alignment = .fill
         stack.spacing = 12
-        launcherScroll.addSubview(stack)
+        let stage = UIView()
+        stage.translatesAutoresizingMaskIntoConstraints = false
+        launcherScroll.addSubview(stage)
+        stage.addSubview(stack)
+        let preferredHeight = stage.heightAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.heightAnchor)
+        preferredHeight.priority = UILayoutPriority(249)
 
         let hero = UIView()
         let heroStack = UIStackView()
@@ -321,7 +566,6 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         heroStack.spacing = 6
         hero.addSubview(heroStack)
 
-        let mascot = ChefMascotView()
         mascot.translatesAutoresizingMaskIntoConstraints = false
         heroStack.addArrangedSubview(mascot)
         heroStack.setCustomSpacing(6, after: mascot)
@@ -352,11 +596,11 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         stack.addArrangedSubview(hero)
 
         primaryButton.translatesAutoresizingMaskIntoConstraints = false
-        var primaryConfiguration = UIButton.Configuration.filled()
+        var primaryConfiguration = UIButton.Configuration.plain()
         primaryConfiguration.title = "一键启动酒馆"
         primaryConfiguration.image = UIImage(systemName: "play.fill")
         primaryConfiguration.imagePadding = 9
-        primaryConfiguration.baseBackgroundColor = Palette.accent
+        primaryConfiguration.background.backgroundColor = Palette.accent
         primaryConfiguration.baseForegroundColor = .white
         primaryConfiguration.background.cornerRadius = 8
         primaryConfiguration.contentInsets = NSDirectionalEdgeInsets(
@@ -384,43 +628,25 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         ])
         stack.addArrangedSubview(primaryRow)
 
-        configureStatusCard()
-        stack.addArrangedSubview(statusCard)
 
+        let preferredWidth = stack.widthAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.widthAnchor, constant: -40)
+        preferredWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.topAnchor, constant: 4),
-            stack.bottomAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.bottomAnchor, constant: -24),
-            stack.leadingAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.trailingAnchor, constant: -20),
+            preferredWidth,
+            stage.topAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.topAnchor),
+            stage.bottomAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.bottomAnchor),
+            stage.leadingAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.leadingAnchor),
+            stage.trailingAnchor.constraint(equalTo: launcherScroll.contentLayoutGuide.trailingAnchor),
+            stage.widthAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.widthAnchor),
+            stage.heightAnchor.constraint(greaterThanOrEqualTo: launcherScroll.frameLayoutGuide.heightAnchor),
+            preferredHeight,
+            stack.topAnchor.constraint(greaterThanOrEqualTo: stage.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: stage.bottomAnchor, constant: -24),
+            stack.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: stage.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: stage.trailingAnchor, constant: -20),
             stack.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
             stack.centerXAnchor.constraint(equalTo: launcherScroll.frameLayoutGuide.centerXAnchor),
-        ])
-    }
-
-    private func configureStatusCard() {
-        statusCard.translatesAutoresizingMaskIntoConstraints = false
-        statusCard.backgroundColor = .clear
-
-        statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.backgroundColor = UIColor(red: 0.690, green: 0.706, blue: 0.647, alpha: 1)
-        statusDot.layer.cornerRadius = 4
-        statusCard.addSubview(statusDot)
-
-        statusTitle.translatesAutoresizingMaskIntoConstraints = false
-        statusTitle.text = "酒馆尚未启动"
-        statusTitle.textColor = Palette.muted
-        statusTitle.font = .systemFont(ofSize: 11, weight: .regular)
-        statusTitle.textAlignment = .center
-        statusCard.addSubview(statusTitle)
-
-        NSLayoutConstraint.activate([
-            statusCard.heightAnchor.constraint(equalToConstant: 22),
-            statusTitle.centerXAnchor.constraint(equalTo: statusCard.centerXAnchor),
-            statusTitle.centerYAnchor.constraint(equalTo: statusCard.centerYAnchor),
-            statusDot.trailingAnchor.constraint(equalTo: statusTitle.leadingAnchor, constant: -7),
-            statusDot.centerYAnchor.constraint(equalTo: statusTitle.centerYAnchor),
-            statusDot.widthAnchor.constraint(equalToConstant: 6),
-            statusDot.heightAnchor.constraint(equalToConstant: 6),
         ])
     }
 
@@ -480,7 +706,78 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
             runtimeStack.addArrangedSubview(runtimeValues)
         }
         stack.addArrangedSubview(runtimeCard)
+        let dangerCard = makeCard(title: "危险操作", subtitle:
+            "永久清除本机角色、聊天、API 配置及酒馆缓存，请先自行备份。已启动过酒馆时，将在彻底关闭 App 并重新打开后执行。")
+        if let dangerStack = dangerCard.subviews.last as? UIStackView {
+            resetButton.configuration?.baseForegroundColor = UIColor(red: 0.706, green: 0.239, blue: 0.196, alpha: 1)
+            resetButton.addTarget(self, action: #selector(confirmLocalReset), for: .touchUpInside)
+            dangerStack.addArrangedSubview(resetButton)
+        }
+        stack.addArrangedSubview(dangerCard)
 
+
+    }
+
+    private func showResetNotice(_ message: String) {
+        present(ChefDialogController(title: "重置本地数据", message: message), animated: true)
+    }
+
+    @objc private func confirmLocalReset() {
+        guard !resetBusy else { return }
+        let timing = runtimeStarted
+            ? "本次已启动过酒馆，确认后请从多任务界面划掉 App，再重新打开执行重置。"
+            : "确认后立即执行，下次启动酒馆将重新初始化。"
+        let dialog = ChefDialogController(title: "重置本地数据？",
+            message: "角色、聊天、API 配置及酒馆缓存将永久删除，无法撤销，请先自行备份。\n" + timing,
+            phrase: "确认重置", actionTitle: "确认重置") { [weak self] in
+            guard let self else { return }
+            do {
+                try Data([1]).write(to: self.resetMarker, options: .atomic)
+                if self.runtimeStarted {
+                    self.showResetNotice("已安排重置。请从多任务界面划掉 App，再重新打开。返回首页或切到后台不会执行重置。")
+                } else { self.performLocalReset() }
+            } catch { self.showResetNotice("无法安排重置，请重试。") }
+        }
+        present(dialog, animated: true)
+    }
+
+    private func performLocalReset() {
+        guard !runtimeStarted, !resetBusy else { return }
+        resetBusy = true
+        resetButton.isEnabled = false
+        resetButton.configuration?.title = "正在重置…"
+        let target = dataRoot
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // removeItem unlinks symlinks instead of following them. Bundle stays intact.
+                let manager = FileManager.default
+                do { try manager.removeItem(at: target) }
+                catch let error as NSError where error.domain == NSCocoaErrorDomain
+                    && error.code == NSFileNoSuchFileError { /* Already empty. */ }
+                DispatchQueue.main.async {
+                    let store = self.tavernWebView.configuration.websiteDataStore
+                    store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+                        do {
+                            try FileManager.default.removeItem(at: self.resetMarker)
+                            self.finishLocalReset(true)
+                        } catch { self.finishLocalReset(false) }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { self.finishLocalReset(false) }
+            }
+        }
+    }
+
+    private func finishLocalReset(_ completed: Bool) {
+        resetBusy = false
+        resetButton.isEnabled = true
+        resetButton.configuration?.title = "重置本地数据"
+        // Launch recovery runs before viewDidAppear, so defer the alert until visible.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.showResetNotice(completed ? "本地数据已重置，下次启动酒馆将重新初始化。"
+                : "重置失败，可能已清除部分数据。请重试；完成前无法启动酒馆。")
+        }
     }
 
     private func configureWebViews() {
@@ -561,12 +858,12 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     }
 
     private func makeSecondaryButton(title: String, image: String) -> UIButton {
-        var configuration = UIButton.Configuration.tinted()
+        var configuration = UIButton.Configuration.plain()
         configuration.title = title
         configuration.image = UIImage(systemName: image)
         configuration.imagePadding = 7
         configuration.baseForegroundColor = Palette.ink
-        configuration.baseBackgroundColor = Palette.sidebar
+        configuration.background.backgroundColor = Palette.sidebar
         configuration.cornerStyle = .medium
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 13, bottom: 10, trailing: 13)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
@@ -600,6 +897,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
 
     @objc private func tabTapped(_ sender: UIButton) {
         setTab(sender.tag)
+        closeDrawer()
     }
 
     private func setTab(_ index: Int) {
@@ -607,7 +905,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         currentTab = index
         if index == 2 && !docsLoaded {
             docsLoaded = true
-            docsWebView.load(URLRequest(url: URL(string: "https://www.chef25.com/guides/sillytavern/")!))
+            docsWebView.load(URLRequest(url: URL(string: "https://www.chef25.com/guides/sillytavern/?hideHeader=1")!))
         }
         refreshNavigation()
     }
@@ -615,7 +913,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     private func refreshNavigation() {
         let inTavern = currentTab == 0 && tavernEntered
         header.isHidden = inTavern
-        tabBar.isHidden = inTavern
+        if inTavern { setDrawer(open: false, animated: false) }
         launcherScroll.isHidden = currentTab != 0 || tavernEntered
         dataScroll.isHidden = currentTab != 1
         docsWebView.isHidden = currentTab != 2
@@ -624,17 +922,17 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
         homeButton.isHidden = !inTavern
         contentTopWithHeader.isActive = !inTavern
         contentTopFull.isActive = inTavern
-        contentBottomWithTabs.isActive = !inTavern
-        contentBottomFull.isActive = inTavern
-        view.backgroundColor = inTavern ? UIColor(white: 0.09, alpha: 1) : Palette.paper
+        mainContent.backgroundColor = inTavern ? UIColor(white: 0.09, alpha: 1) : Palette.paper
         contentContainer.backgroundColor = inTavern ? UIColor(white: 0.09, alpha: 1) : .clear
         tavernWebView.scrollView.contentInsetAdjustmentBehavior = .never
         setNeedsStatusBarAppearanceUpdate()
+        refreshMascotMotion()
 
         let titles = ["我的酒馆", "本地数据", "中文文档", "设置"]
         pageTitle.text = titles[min(currentTab, titles.count - 1)]
         pageSubtitle.isHidden = currentTab != 0
         for (index, button) in tabButtons.enumerated() {
+            button.accessibilityTraits = index == currentTab ? [.button, .selected] : .button
             button.configuration?.baseForegroundColor =
                 index == currentTab ? UIColor(red: 0.812, green: 0.396, blue: 0.247, alpha: 1) : Palette.muted
             button.configuration?.background.backgroundColor =
@@ -657,6 +955,10 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     }
 
     private func startRuntime() {
+        guard !resetBusy, !resetPending else {
+            showResetNotice("重置尚未完成。请在设置中重试；若本次已启动过酒馆，请彻底关闭 App 后重新打开。")
+            return
+        }
         guard !runtimeStarted else { return }
         runtimeStarted = true
         updateRuntimeState(.starting)
@@ -690,36 +992,28 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     private func updateRuntimeState(_ state: RuntimeState) {
         switch state {
         case .stopped:
-            statusDot.backgroundColor = UIColor(red: 0.690, green: 0.706, blue: 0.647, alpha: 1)
-            statusTitle.text = "酒馆尚未启动"
             primaryButton.configuration?.title = "一键启动酒馆"
             primaryButton.configuration?.image = UIImage(systemName: "play.fill")
             primaryButton.isEnabled = true
             settingsStatusValue.text = "尚未启动"
         case .starting:
-            statusDot.backgroundColor = Palette.amber
-            statusTitle.text = "酒馆准备中…"
             primaryButton.configuration?.title = "小厨正在准备…"
             primaryButton.configuration?.image = nil
             primaryButton.isEnabled = false
             settingsStatusValue.text = "启动中"
         case .running:
             runtimeReady = true
-            statusDot.backgroundColor = Palette.green
-            statusTitle.text = "酒馆运行中"
             primaryButton.configuration?.title = "进入酒馆"
             primaryButton.configuration?.image = UIImage(systemName: "arrow.right")
             primaryButton.isEnabled = !tavernEntered
             settingsStatusValue.text = "运行中"
         case .failed(let reason):
             runtimeReady = false
-            statusDot.backgroundColor = UIColor(red: 0.745, green: 0.275, blue: 0.220, alpha: 1)
-            statusTitle.text = "启动失败"
-            statusTitle.accessibilityLabel = reason
             primaryButton.configuration?.title = "启动失败"
             primaryButton.configuration?.image = nil
             primaryButton.isEnabled = false
             settingsStatusValue.text = "启动失败"
+            settingsStatusValue.accessibilityLabel = reason
         }
     }
 
@@ -739,9 +1033,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.updateRuntimeState(.running)
-                    if ProcessInfo.processInfo.environment["CHEF25_UI_TEST_MESSAGE"] != nil {
-                        self.enterTavern()
-                    }
+                    if self.currentTab == 0 { self.enterTavern() }
                 }
                 return
             }
@@ -765,22 +1057,15 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
 
     @objc private func copyDataPath() {
         UIPasteboard.general.string = dataRoot.path
-        let alert = UIAlertController(title: "已复制", message: "存储路径已复制到剪贴板。", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default))
-        present(alert, animated: true)
+        present(ChefDialogController(title: "已复制", message: "存储路径已复制到剪贴板。"), animated: true)
     }
 
     @objc private func showAbout() {
-        let alert = UIAlertController(
-            title: "25小厨 Mobile",
-            message: """
-            SillyTavern 1.19.0
-            Node.js v24.22.1
-            """,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "关闭", style: .default))
-        present(alert, animated: true)
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        present(ChefDialogController(title: "25小厨 Mobile",
+            message: "版本 \(version)（\(build)）\nSillyTavern 1.19.0\nNode.js v24.22.1",
+            actionTitle: "关闭"), animated: true)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -875,6 +1160,7 @@ final class RuntimeViewController: UIViewController, WKNavigationDelegate {
     }
 
     @objc private func applicationDidBecomeActive() {
+        refreshMascotMotion()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.saveUITestSnapshot(named: "chef25-foreground-recovery.png")
         }
@@ -1053,6 +1339,33 @@ private final class TavernBrandView: UIView {
 }
 
 private final class ChefMascotView: UIView {
+    private var displayLink: CADisplayLink?
+    private var motionTime: TimeInterval = 0
+    private var previousFrame: TimeInterval = 0
+
+    func setAnimating(_ active: Bool) {
+        guard active != (displayLink != nil) else { return }
+        if active {
+            previousFrame = 0
+            let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            link.preferredFramesPerSecond = 30
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        } else {
+            displayLink?.invalidate()
+            displayLink = nil
+            setNeedsDisplay()
+        }
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        if previousFrame > 0 {
+            motionTime += min(link.timestamp - previousFrame, 0.1)
+        }
+        previousFrame = link.timestamp
+        setNeedsDisplay()
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
@@ -1065,6 +1378,11 @@ private final class ChefMascotView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
+        let pose = UIAccessibility.isReduceMotionEnabled ? MascotPose() : MascotPose.at(motionTime)
+        let lookX = CGFloat(pose.lookX)
+        let lookY = CGFloat(pose.lookY)
+        let joy = CGFloat(pose.joy)
+        let eyeOpen = CGFloat(pose.eyeOpen)
         let scale = min(rect.width / 200, rect.height / 150)
         let origin = CGPoint(
             x: (rect.width - 200 * scale) / 2,
@@ -1125,6 +1443,12 @@ private final class ChefMascotView: UIView {
         sparkle(27, 58, size: 10, filled: true)
         sparkle(172, 110, size: 8, filled: false)
 
+        let context = UIGraphicsGetCurrentContext()
+        context?.saveGState()
+        context?.translateBy(x: point(100, 82).x + CGFloat(pose.headX) * 2.5 * scale,
+            y: point(100, 82).y + CGFloat(pose.headY) * scale - CGFloat(pose.bob) * scale)
+        context?.rotate(by: CGFloat(pose.headX) * 0.04)
+        context?.translateBy(x: -point(100, 82).x, y: -point(100, 82).y)
         let hat = UIBezierPath()
         hat.move(to: point(67, 87))
         hat.addCurve(to: point(70, 46), controlPoint1: point(43, 79), controlPoint2: point(45, 47))
@@ -1149,7 +1473,8 @@ private final class ChefMascotView: UIView {
         band.lineCapStyle = .round
         band.stroke()
 
-        UIColor(red: 0.918, green: 0.643, blue: 0.529, alpha: 0.24).setFill()
+        context?.translateBy(x: lookX * 5 * scale, y: lookY * 3 * scale)
+        UIColor(red: 0.918, green: 0.643, blue: 0.529, alpha: 0.15 + joy * 0.45).setFill()
         UIBezierPath(ovalIn: CGRect(
             x: point(70, 89).x,
             y: point(89, 89).y,
@@ -1163,21 +1488,35 @@ private final class ChefMascotView: UIView {
             height: 6 * scale
         )).fill()
 
-        UIColor(red: 0.569, green: 0.420, blue: 0.286, alpha: 1).setStroke()
-        for eyeX in [85.0, 115.0] {
-            let eye = UIBezierPath()
-            eye.move(to: point(eyeX, 81))
-            eye.addQuadCurve(to: point(eyeX, 81), controlPoint: point(eyeX, 85.5))
-            eye.lineWidth = 4.5 * scale
-            eye.lineCapStyle = .round
-            eye.stroke()
+        let eyeColor = UIColor(red: 0.569, green: 0.420, blue: 0.286, alpha: 1)
+        eyeColor.setFill()
+        eyeColor.setStroke()
+        for eyeX: CGFloat in [85, 115] {
+            if eyeOpen <= 0.001 || pose.smilingEyes {
+                // Preserve a visible stroke when closed. Both expressions meet
+                // at exactly the same closed-eye line, with no curve inversion.
+                let eye = UIBezierPath()
+                eye.move(to: point(eyeX - 3, 82 + eyeOpen))
+                eye.addQuadCurve(to: point(eyeX + 3, 82 + eyeOpen),
+                    controlPoint: point(eyeX, 82 - eyeOpen * 5))
+                eye.lineWidth = CGFloat(pose.eyeLineWidth) * scale
+                eye.lineCapStyle = .round
+                eye.stroke()
+            } else {
+                let width = CGFloat(pose.eyeWidth) * scale
+                let height = CGFloat(pose.eyeHeight) * scale
+                let center = point(eyeX, 82)
+                UIBezierPath(ovalIn: CGRect(x: center.x - width / 2, y: center.y - height / 2,
+                    width: width, height: height)).fill()
+            }
         }
         let mouth = UIBezierPath()
         mouth.move(to: point(96, 91))
-        mouth.addQuadCurve(to: point(104, 91), controlPoint: point(100, 97))
+        mouth.addQuadCurve(to: point(104, 91), controlPoint: point(100, 98 + joy * 3))
         mouth.lineWidth = 2.5 * scale
         mouth.lineCapStyle = .round
         mouth.stroke()
+        context?.restoreGState()
     }
 }
 
@@ -1192,4 +1531,165 @@ extension RuntimeViewController: WKScriptMessageHandler {
             saveUITestSnapshot(named: "chef25-shell-tavern-reply.png")
         }
     }
+}
+
+
+// App-owned modal and controls; never use the platform alert appearance.
+private final class ChefDialogController: UIViewController {
+    private let heading: String
+    private let message: String
+    private let phrase: String?
+    private let actionTitle: String
+    private let onConfirm: (() -> Void)?
+    private let field = ChefTextField()
+    private let confirmButton = ChefActionButton(primary: true)
+
+    init(title: String, message: String, phrase: String? = nil,
+         actionTitle: String = "知道了", onConfirm: (() -> Void)? = nil) {
+        heading = title
+        self.message = message
+        self.phrase = phrase
+        self.actionTitle = actionTitle
+        self.onConfirm = onConfirm
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalTransitionStyle = .crossDissolve
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.38)
+        view.accessibilityViewIsModal = true
+        let card = UIView()
+        card.backgroundColor = UIColor(red: 1, green: 0.992, blue: 0.976, alpha: 1)
+        card.layer.cornerRadius = 20
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor(red: 0.902, green: 0.890, blue: 0.851, alpha: 1).cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(card)
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(scroll)
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        let title = UILabel()
+        title.text = heading
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        title.textColor = UIColor(red: 0.188, green: 0.200, blue: 0.173, alpha: 1)
+        title.numberOfLines = 0
+        title.accessibilityTraits = .header
+        stack.addArrangedSubview(title)
+        let body = UILabel()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        body.attributedText = NSAttributedString(string: message, attributes: [.paragraphStyle: paragraph])
+        body.font = .systemFont(ofSize: 14)
+        body.textColor = UIColor(red: 0.455, green: 0.471, blue: 0.412, alpha: 1)
+        body.numberOfLines = 0
+        stack.addArrangedSubview(body)
+        if let phrase {
+            field.placeholder = "请输入：" + phrase
+            field.accessibilityLabel = "输入" + phrase
+            field.addTarget(self, action: #selector(phraseChanged), for: .editingChanged)
+            stack.addArrangedSubview(field)
+            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        }
+        let actions = UIStackView()
+        actions.axis = .horizontal
+        actions.spacing = 10
+        actions.distribution = .fillEqually
+        if phrase != nil {
+            let cancel = ChefActionButton(primary: false)
+            cancel.setTitle("取消", for: .normal)
+            cancel.addTarget(self, action: #selector(close), for: .touchUpInside)
+            actions.addArrangedSubview(cancel)
+        }
+        confirmButton.setTitle(actionTitle, for: .normal)
+        confirmButton.isEnabled = phrase == nil
+        confirmButton.addTarget(self, action: #selector(confirm), for: .touchUpInside)
+        actions.addArrangedSubview(confirmButton)
+        stack.addArrangedSubview(actions)
+        stack.setCustomSpacing(24, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
+        actions.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        let naturalHeight = scroll.heightAnchor.constraint(equalTo: stack.heightAnchor)
+        naturalHeight.priority = .defaultHigh
+        let centered = card.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor)
+        centered.priority = .defaultHigh
+        let width = card.widthAnchor.constraint(equalToConstant: 360)
+        width.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: view.centerXAnchor), centered, width,
+            card.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor, constant: -40),
+            card.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            card.bottomAnchor.constraint(lessThanOrEqualTo: view.keyboardLayoutGuide.topAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
+            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -24),
+            scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
+            scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor), naturalHeight,
+        ])
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        UIAccessibility.post(notification: .screenChanged, argument: view)
+    }
+    @objc private func phraseChanged() { confirmButton.isEnabled = field.text == phrase }
+    @objc private func close() { dismiss(animated: true) }
+    @objc private func confirm() {
+        guard phrase == nil || field.text == phrase else { return }
+        let callback = onConfirm
+        dismiss(animated: true) { callback?() }
+    }
+    override func accessibilityPerformEscape() -> Bool { close(); return true }
+}
+
+private final class ChefActionButton: UIButton {
+    private let primary: Bool
+    init(primary: Bool) {
+        self.primary = primary
+        super.init(frame: .zero)
+        titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel?.adjustsFontSizeToFitWidth = true
+        titleLabel?.minimumScaleFactor = 0.8
+        layer.cornerRadius = 10
+        layer.borderWidth = 1
+        layer.borderColor = UIColor(red: 0.902, green: 0.890, blue: 0.851, alpha: 1).cgColor
+        setTitleColor(primary ? .white : UIColor(red: 0.188, green: 0.200, blue: 0.173, alpha: 1), for: .normal)
+        refreshAppearance()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var isEnabled: Bool { didSet { refreshAppearance() } }
+    override var isHighlighted: Bool { didSet { refreshAppearance() } }
+    private func refreshAppearance() {
+        backgroundColor = primary ? UIColor(red: 0.925, green: 0.396, blue: 0.255, alpha: 1)
+            : UIColor(red: 0.953, green: 0.945, blue: 0.914, alpha: 1)
+        alpha = !isEnabled ? 0.38 : (isHighlighted ? 0.75 : 1)
+    }
+}
+
+private final class ChefTextField: UITextField {
+    init() {
+        super.init(frame: .zero)
+        borderStyle = .none
+        backgroundColor = UIColor(red: 0.984, green: 0.976, blue: 0.961, alpha: 1)
+        textColor = UIColor(red: 0.188, green: 0.200, blue: 0.173, alpha: 1)
+        tintColor = UIColor(red: 0.925, green: 0.396, blue: 0.255, alpha: 1)
+        font = .systemFont(ofSize: 14)
+        autocorrectionType = .no
+        layer.cornerRadius = 10
+        layer.borderWidth = 1
+        layer.borderColor = UIColor(red: 0.839, green: 0.824, blue: 0.773, alpha: 1).cgColor
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func textRect(forBounds bounds: CGRect) -> CGRect { bounds.insetBy(dx: 14, dy: 12) }
+    override func editingRect(forBounds bounds: CGRect) -> CGRect { textRect(forBounds: bounds) }
+    override func placeholderRect(forBounds bounds: CGRect) -> CGRect { textRect(forBounds: bounds) }
 }

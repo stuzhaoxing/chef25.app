@@ -1,5 +1,5 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "androidMinSdk": 24,
   "iosDeploymentTarget": "15.0"
 }

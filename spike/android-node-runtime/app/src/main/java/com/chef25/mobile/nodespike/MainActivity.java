@@ -1,7 +1,7 @@
 package com.chef25.mobile.nodespike;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -20,6 +20,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.VelocityTracker;
+import android.view.animation.LinearInterpolator;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsetsController;
@@ -29,6 +32,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.webkit.CookieManager;
+import android.webkit.WebStorage;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -86,7 +91,24 @@ public final class MainActivity extends Activity {
     private LinearLayout root;
     private View header;
     private FrameLayout content;
-    private LinearLayout tabBar;
+    private FrameLayout shell;
+    private FrameLayout drawerOverlay;
+    private LinearLayout drawerPanel;
+    private TextView menuButton;
+    private ChefMascotView mascot;
+    private boolean drawerOpen;
+    private boolean resumed;
+    private float gestureStartX;
+    private float gestureStartY;
+    private boolean drawerGesture;
+    private boolean edgeGesture;
+    private boolean gestureRejected;
+    private boolean gestureCanClose;
+    private float gestureStartProgress;
+    private float drawerProgress;
+    private ValueAnimator drawerAnimator;
+    private VelocityTracker drawerVelocity;
+    private View drawerDismiss;
     private TextView homeButton;
     private TextView pageTitle;
     private TavernBrandView pageSubtitle;
@@ -95,10 +117,12 @@ public final class MainActivity extends Activity {
     private ScrollView settingsPage;
     private WebView docsWebView;
     private WebView tavernWebView;
-    private TextView statusDot;
-    private TextView statusTitle;
     private TextView settingsStatus;
     private Button primaryButton;
+    private Button resetButton;
+    private static boolean resetBusy;
+    private static final ExecutorService resetExecutor = Executors.newSingleThreadExecutor();
+    private final Handler resetHandler = new Handler(Looper.getMainLooper());
     private TextView[] tabViews = new TextView[4];
     private NavIconView[] tabIcons = new NavIconView[4];
     private File projectDirectory;
@@ -123,6 +147,11 @@ public final class MainActivity extends Activity {
         configureViews();
         configureSystemBars();
         showTab(0);
+        if (resetMarker().exists()) {
+            if (!nodeRuntimeStarted) performLocalReset();
+            else showResetNotice("已安排重置，请从系统设置强行停止 App 后重新打开。返回首页或切到后台不会执行重置。");
+            return;
+        }
         restoreNodeRuntimeState();
         if (getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null) {
             startRuntime();
@@ -151,6 +180,10 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (drawerOpen) {
+            setDrawerOpen(false);
+            return;
+        }
         if (tavernEntered) {
             tavernEntered = false;
             refreshNavigation();
@@ -165,7 +198,86 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        ViewGroup.LayoutParams params = drawerPanel.getLayoutParams();
+        params.width = Math.min(dp(380), (int) (getResources().getDisplayMetrics().widthPixels * 0.82f));
+        drawerPanel.setLayoutParams(params);
+        setDrawerOpen(false);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        resumed = true;
+        refreshMascotMotion();
+    }
+
+    @Override
+    protected void onPause() {
+        resumed = false;
+        refreshMascotMotion();
+        super.onPause();
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            gestureStartX = event.getX();
+            gestureStartY = event.getY();
+            edgeGesture = !tavernEntered && !drawerOpen && gestureStartX <= dp(28);
+            gestureCanClose = drawerOpen;
+            drawerGesture = false;
+            gestureRejected = false;
+            if (drawerVelocity != null) { drawerVelocity.recycle(); }
+            drawerVelocity = VelocityTracker.obtain();
+        }
+        if (drawerVelocity != null) { drawerVelocity.addMovement(event); }
+        float dx = event.getX() - gestureStartX;
+        float dy = event.getY() - gestureStartY;
+        if (action == MotionEvent.ACTION_MOVE && !drawerGesture && !gestureRejected) {
+            if (Math.abs(dx) > dp(12) && Math.abs(dx) > Math.abs(dy) * 1.4f
+                && ((edgeGesture && dx > 0) || (gestureCanClose && dx < 0))) {
+                drawerGesture = true;
+                if (drawerAnimator != null) { drawerAnimator.cancel(); }
+                gestureStartProgress = drawerProgress;
+                drawerOverlay.setVisibility(View.VISIBLE);
+                drawerDismiss.setVisibility(View.VISIBLE);
+                mascot.setAnimating(false);
+                MotionEvent cancel = MotionEvent.obtain(event);
+                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                super.dispatchTouchEvent(cancel);
+                cancel.recycle();
+            } else if (Math.abs(dx) > dp(12) || Math.abs(dy) > dp(12)) {
+                gestureRejected = true;
+            }
+        }
+        boolean consumed = drawerGesture;
+        if (drawerGesture) {
+            renderDrawer(Math.max(0, Math.min(1, gestureStartProgress + dx / drawerPanel.getLayoutParams().width)));
+            if (action == MotionEvent.ACTION_UP) {
+                drawerVelocity.computeCurrentVelocity(1000);
+                float velocity = drawerVelocity.getXVelocity() / getResources().getDisplayMetrics().density;
+                setDrawerOpen(velocity > 250 || (velocity >= -250 && drawerProgress > 0.5f));
+                drawerGesture = false;
+            } else if (action == MotionEvent.ACTION_CANCEL) {
+                setDrawerOpen(drawerOpen);
+                drawerGesture = false;
+            }
+        }
+        if ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) && drawerVelocity != null) {
+            drawerVelocity.recycle();
+            drawerVelocity = null;
+        }
+        return consumed || super.dispatchTouchEvent(event);
+    }
+
+    @Override
     protected void onDestroy() {
+        mascot.setAnimating(false);
+        if (drawerAnimator != null) { drawerAnimator.cancel(); }
+        if (drawerVelocity != null) { drawerVelocity.recycle(); drawerVelocity = null; }
         activityDestroyed = true;
         mainHandler.removeCallbacksAndMessages(null);
         startupExecutor.shutdownNow();
@@ -202,12 +314,10 @@ public final class MainActivity extends Activity {
             1
         ));
 
-        tabBar = createTabBar();
-        root.addView(tabBar, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(58)
-        ));
-        setContentView(root);
+        shell = new FrameLayout(this);
+        shell.addView(root, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(shell);
 
         launcherPage = createLauncherPage();
         dataPage = createDataPage();
@@ -223,19 +333,36 @@ public final class MainActivity extends Activity {
 
         homeButton = createHomeButton();
         content.addView(homeButton, new FrameLayout.LayoutParams(
-            dp(62),
-            dp(34),
-            Gravity.CENTER_VERTICAL | Gravity.END
+            dp(76),
+            dp(30),
+            Gravity.TOP | Gravity.LEFT
         ));
-        ((FrameLayout.LayoutParams) homeButton.getLayoutParams()).rightMargin = dp(8);
+        content.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) {
+                homeButton.animate().cancel();
+                homeButton.post(this::positionHomeButton);
+            }
+        });
+        homeButton.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (!homeDragging) positionHomeButton();
+        });
+        configureDrawer();
     }
 
     private View createHeader() {
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(18), 0, dp(12), 0);
+        header.setPadding(dp(4), 0, dp(8), 0);
         header.setBackgroundColor(SIDEBAR);
 
+        menuButton = new TextView(this);
+        menuButton.setText("☰");
+        menuButton.setTextSize(24);
+        menuButton.setTextColor(INK);
+        menuButton.setGravity(Gravity.CENTER);
+        menuButton.setContentDescription("展开菜单");
+        menuButton.setOnClickListener(view -> setDrawerOpen(true));
+        header.addView(menuButton, new LinearLayout.LayoutParams(dp(44), dp(48)));
         BrandMarkView mark = new BrandMarkView(this);
         header.addView(mark, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
@@ -275,26 +402,76 @@ public final class MainActivity extends Activity {
         pageCopy.addView(pageSubtitle, new LinearLayout.LayoutParams(dp(108), dp(18)));
         header.addView(pageCopy);
 
-        InfoIconView about = new InfoIconView(this);
-        about.setContentDescription("关于");
-        about.setClickable(true);
-        about.setOnClickListener(view -> showAbout());
-        header.addView(about, new LinearLayout.LayoutParams(dp(36), dp(36)));
         return header;
     }
 
     private TextView createHomeButton() {
         TextView button = new TextView(this);
-        button.setText("‹ 小厨");
-        button.setTextColor(ACCENT);
-        button.setTextSize(11);
+        button.setText("返回小厨");
+        button.setTextColor(INK);
+        button.setTextSize(12);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setGravity(Gravity.CENTER);
-        button.setBackground(rounded(Color.argb(220, 23, 23, 23), 17));
+        button.setBackground(rounded(PAPER, 15));
+        button.setElevation(dp(6));
+        button.setOnTouchListener(this::dragHomeButton);
         button.setContentDescription("返回小厨");
         button.setOnClickListener(view -> returnToLauncher());
         button.setVisibility(View.GONE);
         return button;
+    }
+
+    private boolean homeDockRight = true;
+    private float homeVerticalFraction = 0.5f;
+    private boolean homeDragging;
+    private float homeDownX, homeDownY, homeOriginX, homeOriginY;
+
+    private float homeMinY() { return content.getPaddingTop() + dp(8); }
+    private float homeMaxY() { return Math.max(homeMinY(), content.getHeight() - content.getPaddingBottom() - homeButton.getHeight() - dp(8)); }
+    private float homeMaxX() { return Math.max(dp(8), content.getWidth() - homeButton.getWidth() - dp(8)); }
+
+    private void positionHomeButton() {
+        if (homeDragging || homeButton.getWidth() == 0) return;
+        homeButton.setX(homeDockRight ? homeMaxX() : dp(8));
+        homeButton.setY(homeMinY() + (homeMaxY() - homeMinY()) * homeVerticalFraction);
+    }
+
+    private boolean dragHomeButton(View button, MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                button.animate().cancel();
+                homeDragging = false;
+                homeDownX = event.getRawX(); homeDownY = event.getRawY();
+                homeOriginX = button.getX(); homeOriginY = button.getY();
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                float dx = event.getRawX() - homeDownX, dy = event.getRawY() - homeDownY;
+                if (Math.hypot(dx, dy) > android.view.ViewConfiguration.get(this).getScaledTouchSlop()) homeDragging = true;
+                if (homeDragging) {
+                    button.getParent().requestDisallowInterceptTouchEvent(true);
+                    button.setX(Math.max(dp(8), Math.min(homeMaxX(), homeOriginX + dx)));
+                    button.setY(Math.max(homeMinY(), Math.min(homeMaxY(), homeOriginY + dy)));
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                button.getParent().requestDisallowInterceptTouchEvent(false);
+                if (!homeDragging && event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    button.performClick();
+                    return true;
+                }
+                homeDragging = false;
+                homeDockRight = button.getX() + button.getWidth() / 2f >= content.getWidth() / 2f;
+                homeVerticalFraction = Math.max(0, Math.min(1, (button.getY() - homeMinY()) / Math.max(1, homeMaxY() - homeMinY())));
+                // Match the Next.js indicator's ~491 ms spring-like edge snap.
+                button.animate().x(homeDockRight ? homeMaxX() : dp(8))
+                    .y(homeMinY() + (homeMaxY() - homeMinY()) * homeVerticalFraction)
+                    .setDuration((android.os.Build.VERSION.SDK_INT < 26 || android.animation.ValueAnimator.areAnimatorsEnabled()) ? 491 : 0)
+                    .setInterpolator(new android.view.animation.OvershootInterpolator(0.5f)).start();
+                return true;
+            default:
+                return true;
+        }
     }
 
     private void returnToLauncher() {
@@ -305,7 +482,7 @@ public final class MainActivity extends Activity {
 
     private void applyShellLayout() {
         boolean inTavern = tavernEntered;
-        if (root == null || header == null || tabBar == null || content == null) {
+        if (root == null || header == null || content == null) {
             return;
         }
         root.setPadding(0, inTavern ? 0 : safeTop, 0, inTavern ? 0 : safeBottom);
@@ -313,46 +490,153 @@ public final class MainActivity extends Activity {
         content.setPadding(0, inTavern ? safeTop : 0, 0, inTavern ? safeBottom : 0);
         content.setBackgroundColor(inTavern ? Color.rgb(23, 23, 23) : Color.TRANSPARENT);
         header.setVisibility(inTavern ? View.GONE : View.VISIBLE);
-        tabBar.setVisibility(inTavern ? View.GONE : View.VISIBLE);
+        if (inTavern && drawerOpen) { setDrawerOpen(false); }
+        if (drawerPanel != null) {
+            drawerPanel.setPadding(dp(12), safeTop + dp(8), dp(12), safeBottom + dp(12));
+        }
         if (homeButton != null) {
             homeButton.setVisibility(inTavern ? View.VISIBLE : View.GONE);
         }
         configureSystemBars();
     }
 
-    private LinearLayout createTabBar() {
+    private void configureDrawer() {
+        drawerOverlay = new FrameLayout(this);
+        drawerOverlay.setVisibility(View.GONE);
+        shell.addView(drawerOverlay, 0, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        drawerPanel = new LinearLayout(this);
+        drawerPanel.setOrientation(LinearLayout.VERTICAL);
+        drawerPanel.setBackgroundColor(PAPER);
+        drawerPanel.setPadding(dp(12), safeTop + dp(8), dp(12), safeBottom + dp(12));
+        drawerPanel.setClickable(true);
+        int width = Math.min(dp(380), (int) (getResources().getDisplayMetrics().widthPixels * 0.82f));
+        drawerOverlay.addView(drawerPanel, new FrameLayout.LayoutParams(
+            width, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        TextView close = new TextView(this);
+        close.setText("25小厨");
+        close.setTextSize(20);
+        close.setTextColor(INK);
+        close.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        close.setGravity(Gravity.CENTER_VERTICAL);
+        close.setPadding(dp(16), 0, dp(16), 0);
+        close.setContentDescription("关闭菜单");
+        close.setOnClickListener(view -> setDrawerOpen(false));
+        LinearLayout drawerBrand = new LinearLayout(this);
+        drawerBrand.setGravity(Gravity.CENTER_VERTICAL);
+        drawerBrand.setPadding(dp(10), 0, 0, 0);
+        drawerBrand.addView(new BrandMarkView(this), new LinearLayout.LayoutParams(dp(30), dp(30)));
+        drawerBrand.addView(close, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        drawerPanel.addView(drawerBrand);
+        ScrollView menuScroll = new ScrollView(this);
+        menuScroll.addView(createDrawerMenu());
+        LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
+        menuParams.topMargin = dp(20);
+        drawerPanel.addView(menuScroll, menuParams);
+        TextView about = new TextView(this);
+        about.setText("ⓘ    关于");
+        about.setTextSize(15);
+        about.setTextColor(MUTED);
+        about.setGravity(Gravity.CENTER_VERTICAL);
+        about.setPadding(dp(16), 0, dp(16), 0);
+        about.setContentDescription("关于");
+        about.setOnClickListener(view -> {
+            showAbout();
+        });
+        drawerPanel.addView(about, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        drawerDismiss = new View(this);
+        drawerDismiss.setContentDescription("关闭侧边栏");
+        drawerDismiss.setOnClickListener(view -> setDrawerOpen(false));
+        drawerDismiss.setElevation(dp(13));
+        drawerDismiss.setVisibility(View.GONE);
+        shell.addView(drawerDismiss, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void renderDrawer(float progress) {
+        drawerProgress = progress;
+        float width = drawerPanel.getLayoutParams().width;
+        root.setTranslationX(width * progress);
+        drawerDismiss.setTranslationX(width * progress);
+        drawerPanel.setTranslationX(width * (progress - 1));
+        root.setElevation(progress > 0 ? dp(12) : 0);
+        GradientDrawable background = rounded(tavernEntered ? Color.rgb(23, 23, 23) : PAPER, progress > 0 ? 22 : 0);
+        root.setBackground(background);
+        root.setClipToOutline(progress > 0);
+        drawerOverlay.setImportantForAccessibility(progress > 0
+            ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    }
+
+    private void setDrawerOpen(boolean open) {
+        if (open && tavernEntered) { return; }
+        drawerOpen = open;
+        if (drawerAnimator != null) { drawerAnimator.cancel(); }
+        drawerOverlay.setVisibility(View.VISIBLE);
+        drawerDismiss.setVisibility(View.VISIBLE);
+        root.setImportantForAccessibility(open ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        drawerAnimator = ValueAnimator.ofFloat(drawerProgress, open ? 1 : 0);
+        drawerAnimator.setDuration(open ? 280 : 220);
+        drawerAnimator.addUpdateListener(value -> renderDrawer((float) value.getAnimatedValue()));
+        drawerAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            private boolean cancelled;
+            @Override public void onAnimationCancel(android.animation.Animator animation) { cancelled = true; }
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (cancelled || drawerOpen != open) { return; }
+                drawerOverlay.setVisibility(open ? View.VISIBLE : View.GONE);
+                drawerDismiss.setVisibility(open ? View.VISIBLE : View.GONE);
+                View focusTarget = open ? (View) tabViews[currentTab].getParent() : menuButton;
+                focusTarget.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED);
+            }
+        });
+        drawerAnimator.start();
+        refreshMascotMotion();
+    }
+
+    private void refreshMascotMotion() {
+        if (mascot != null) {
+            mascot.setAnimating(resumed && currentTab == 0 && !tavernEntered && !drawerOpen);
+        }
+    }
+
+    private LinearLayout createDrawerMenu() {
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setBackgroundColor(SIDEBAR);
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackgroundColor(PAPER);
         String[] labels = {"我的酒馆", "本地数据", "中文文档", "设置"};
         for (int index = 0; index < labels.length; index += 1) {
             LinearLayout tab = new LinearLayout(this);
-            tab.setOrientation(LinearLayout.VERTICAL);
-            tab.setGravity(Gravity.CENTER);
-            tab.setPadding(0, dp(6), 0, dp(5));
+            tab.setOrientation(LinearLayout.HORIZONTAL);
+            tab.setGravity(Gravity.CENTER_VERTICAL);
+            tab.setPadding(dp(16), 0, dp(16), 0);
             tab.setContentDescription(labels[index]);
 
             NavIconView icon = new NavIconView(this, index, MUTED);
             LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(18), dp(18));
-            iconParams.bottomMargin = dp(3);
+            iconParams.rightMargin = dp(14);
             tab.addView(icon, iconParams);
 
             TextView label = new TextView(this);
             label.setText(labels[index]);
-            label.setTextSize(10);
+            label.setTextSize(15);
             label.setTextColor(MUTED);
             label.setGravity(Gravity.CENTER);
             tab.addView(label);
             final int tabIndex = index;
-            tab.setOnClickListener(view -> showTab(tabIndex));
+            tab.setOnClickListener(view -> {
+                showTab(tabIndex);
+                setDrawerOpen(false);
+            });
             tabViews[index] = label;
             tabIcons[index] = icon;
             LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(
-                0,
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                1
+                dp(52)
             );
-            tabParams.setMargins(dp(4), dp(6), dp(4), dp(8));
+            tabParams.setMargins(dp(4), 0, dp(4), dp(8));
             bar.addView(tab, tabParams);
         }
         return bar;
@@ -377,7 +661,7 @@ public final class MainActivity extends Activity {
         hero.setGravity(Gravity.CENTER_HORIZONTAL);
         hero.setPadding(dp(20), dp(8), dp(20), dp(2));
 
-        ChefMascotView mascot = new ChefMascotView(this);
+        mascot = new ChefMascotView(this);
         hero.addView(mascot, new LinearLayout.LayoutParams(dp(200), dp(150)));
 
         TextView heading = new TextView(this);
@@ -406,7 +690,7 @@ public final class MainActivity extends Activity {
         hero.addView(subtitle, subtitleParams);
         page.addView(hero);
 
-        primaryButton = new Button(this);
+        primaryButton = new ChefButton(this);
         primaryButton.setText("▶  一键启动酒馆");
         primaryButton.setTextColor(Color.WHITE);
         primaryButton.setTextSize(13);
@@ -424,23 +708,6 @@ public final class MainActivity extends Activity {
         primaryParams.topMargin = dp(10);
         page.addView(primaryButton, primaryParams);
 
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setGravity(Gravity.CENTER);
-        statusRow.setPadding(0, dp(10), 0, 0);
-        statusDot = new TextView(this);
-        statusDot.setText("●");
-        statusDot.setTextColor(Color.rgb(176, 180, 165));
-        statusDot.setTextSize(8);
-        statusRow.addView(statusDot, new LinearLayout.LayoutParams(dp(14), dp(22)));
-        statusTitle = new TextView(this);
-        statusTitle.setText("酒馆尚未启动");
-        statusTitle.setTextColor(MUTED);
-        statusTitle.setTextSize(11);
-        statusRow.addView(statusTitle, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        page.addView(statusRow);
         return scroll;
     }
 
@@ -506,7 +773,106 @@ public final class MainActivity extends Activity {
         settingsStatus.setGravity(Gravity.END);
         runtime.addView(infoRow("运行状态", settingsStatus), rowParams(7));
 
+        LinearLayout danger = addCard(page, "危险操作",
+            "永久清除本机角色、聊天、API 配置及酒馆缓存，请先自行备份。已启动过酒馆时，将在彻底关闭 App 并重新打开后执行。", 12);
+        resetButton = new ChefButton(this);
+        resetButton.setText("重置本地数据");
+        resetButton.setTextColor(ERROR);
+        resetButton.setAllCaps(false);
+        resetButton.setBackground(rounded(ACCENT_SOFT, 8));
+        resetButton.setOnClickListener(view -> confirmLocalReset());
+        danger.addView(resetButton, rowParams(12));
+
+
         return scroll;
+    }
+
+    private File resetMarker() {
+        return new File(getFilesDir(), "chef25-reset-pending");
+    }
+
+    private void showResetNotice(String message) {
+        new ChefDialog(this, "重置本地数据", message).notice("知道了");
+    }
+
+    private void confirmLocalReset() {
+        if (resetBusy) return;
+        new ChefDialog(this, "重置本地数据？",
+            "角色、聊天、API 配置及酒馆缓存将永久删除，无法撤销，请先自行备份。\n"
+                + (nodeRuntimeStarted ? "本次已启动过酒馆，确认后请从系统设置强行停止 App，再重新打开执行重置。" : "确认后立即执行，下次启动酒馆将重新初始化。"))
+            .confirm("确认重置", "确认重置", () -> {
+                try {
+                    try (FileOutputStream output = new FileOutputStream(resetMarker())) {
+                        output.write(1);
+                        output.getFD().sync();
+                    }
+                    if (nodeRuntimeStarted) {
+                        showResetNotice("已安排重置。请从系统设置强行停止 App，再重新打开。切到后台不会执行重置。");
+                    } else performLocalReset();
+                } catch (IOException error) {
+                    showResetNotice("无法安排重置，请重试。");
+                }
+            });
+    }
+
+    private void performLocalReset() {
+        if (nodeRuntimeStarted || resetBusy) return;
+        resetBusy = true;
+        resetButton.setEnabled(false);
+        resetButton.setText("正在重置…");
+        resetExecutor.execute(() -> {
+            try {
+                // Fixed app-owned entries only; never traverse symbolic links.
+                File files = getFilesDir().getCanonicalFile();
+                deleteResetEntry(new File(files, "chef25-data"));
+                deleteResetEntry(new File(files, "sillytavern"));
+                resetHandler.post(() -> {
+                    if (activityDestroyed) { resetBusy = false; return; }
+                    tavernWebView.clearCache(true);
+                    tavernWebView.clearHistory();
+                    WebStorage.getInstance().deleteAllData();
+                    CookieManager.getInstance().removeAllCookies(removed -> {
+                        CookieManager.getInstance().flush();
+                        boolean completed = resetMarker().delete();
+                        finishLocalReset(completed);
+                    });
+                });
+            } catch (IOException error) {
+                resetHandler.post(() -> finishLocalReset(false));
+            }
+        });
+    }
+
+    private void finishLocalReset(boolean completed) {
+        resetBusy = false;
+        if (activityDestroyed) return;
+        resetButton.setEnabled(true);
+        resetButton.setText("重置本地数据");
+        showResetNotice(completed ? "本地数据已重置，下次启动酒馆将重新初始化。"
+            : "重置失败，可能已清除部分数据。请重试；完成前无法启动酒馆。");
+    }
+
+    private void deleteResetEntry(File file) throws IOException {
+        if (!file.getCanonicalFile().equals(file.getAbsoluteFile())) {
+            if (!file.delete()) throw new IOException("Cannot remove reset link");
+            return;
+        }
+        if (!file.exists()) {
+            // File.exists follows links; an orphaned link still needs unlinking.
+            if (file.delete()) return;
+            File[] siblings = file.getParentFile().listFiles();
+            if (siblings == null) throw new IOException("Cannot inspect reset entry");
+            for (File sibling : siblings) {
+                if (sibling.getName().equals(file.getName())) throw new IOException("Cannot remove reset entry");
+            }
+            return;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children == null) throw new IOException("Cannot read reset directory");
+            for (File child : children) deleteResetEntry(child);
+        }
+        if (!file.delete()) throw new IOException("Cannot remove reset entry");
     }
 
     private WebView createRuntimeWebView() {
@@ -638,7 +1004,7 @@ public final class MainActivity extends Activity {
     }
 
     private Button secondaryButton(String label) {
-        Button button = new Button(this);
+        Button button = new ChefButton(this);
         button.setText(label);
         button.setTextColor(INK);
         button.setTextSize(12);
@@ -685,7 +1051,7 @@ public final class MainActivity extends Activity {
         currentTab = index;
         if (index == 2 && !docsLoaded) {
             docsLoaded = true;
-            docsWebView.loadUrl("https://www.chef25.com/guides/sillytavern/");
+            docsWebView.loadUrl("https://www.chef25.com/guides/sillytavern/?hideHeader=1");
         }
         refreshNavigation();
     }
@@ -708,6 +1074,7 @@ public final class MainActivity extends Activity {
         for (int tabIndex = 0; tabIndex < tabViews.length; tabIndex += 1) {
             TextView tab = tabViews[tabIndex];
             boolean selected = tabIndex == currentTab;
+            ((View) tab.getParent()).setSelected(selected);
             tab.setTextColor(selected ? SELECTED : MUTED);
             tabIcons[tabIndex].setIconColor(selected ? SELECTED : MUTED);
             ViewGroup parent = (ViewGroup) tab.getParent();
@@ -717,6 +1084,7 @@ public final class MainActivity extends Activity {
             );
         }
         applyShellLayout();
+        refreshMascotMotion();
     }
 
     private void primaryAction() {
@@ -728,30 +1096,25 @@ public final class MainActivity extends Activity {
     }
 
     private void startRuntime() {
+        if (resetBusy || resetMarker().exists()) {
+            showResetNotice("重置尚未完成。请在设置中重试；若本次已启动过酒馆，请彻底关闭 App 后重新打开。");
+            return;
+        }
         if (runtimeStarted) {
             restoreNodeRuntimeState();
-            enterTavernForTestIntent();
+            if (runtimeReady && currentTab == 0) enterTavern();
             return;
         }
         if (nodeRuntimeStarted) {
             runtimeStarted = true;
             restoreNodeRuntimeState();
-            enterTavernForTestIntent();
+            if (runtimeReady && currentTab == 0) enterTavern();
             return;
         }
         nodeRuntimeStarted = true;
         runtimeStarted = true;
         updateRuntimeState(RuntimeState.STARTING);
         startupExecutor.execute(this::prepareAndStartRuntime);
-    }
-
-    private void enterTavernForTestIntent() {
-        if (
-            runtimeReady
-                && getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null
-        ) {
-            enterTavern();
-        }
     }
 
     private void prepareAndStartRuntime() {
@@ -890,7 +1253,7 @@ public final class MainActivity extends Activity {
                     nodeRuntimeReady = true;
                     nodeRuntimeFailure = null;
                     updateRuntimeState(RuntimeState.RUNNING);
-                    if (getIntent().getStringExtra("CHEF25_UI_TEST_MESSAGE") != null) {
+                    if (currentTab == 0) {
                         enterTavern();
                     }
                 } else {
@@ -946,31 +1309,23 @@ public final class MainActivity extends Activity {
     private void updateRuntimeState(RuntimeState state) {
         switch (state.kind) {
             case "STOPPED":
-                statusDot.setTextColor(Color.rgb(176, 180, 165));
-                statusTitle.setText("酒馆尚未启动");
                 primaryButton.setText("▶  一键启动酒馆");
                 primaryButton.setEnabled(true);
                 setSettingsStatus("尚未启动");
                 break;
             case "STARTING":
-                statusDot.setTextColor(AMBER);
-                statusTitle.setText("小厨正在准备…");
                 primaryButton.setText("正在准备…");
                 primaryButton.setEnabled(false);
                 setSettingsStatus("启动中");
                 break;
             case "RUNNING":
                 runtimeReady = true;
-                statusDot.setTextColor(GREEN);
-                statusTitle.setText("酒馆运行中");
                 primaryButton.setText(tavernEntered ? "正在酒馆中" : "进入酒馆  →");
                 primaryButton.setEnabled(!tavernEntered);
                 setSettingsStatus("运行中");
                 break;
             case "FAILED":
                 runtimeReady = false;
-                statusDot.setTextColor(ERROR);
-                statusTitle.setText("启动失败");
                 primaryButton.setText("启动失败，请重启 App");
                 primaryButton.setEnabled(false);
                 setSettingsStatus("启动失败");
@@ -990,22 +1345,20 @@ public final class MainActivity extends Activity {
         ClipboardManager clipboard =
             (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("25小厨存储路径", dataDirectory.getAbsolutePath()));
-        new AlertDialog.Builder(this)
-            .setTitle("已复制")
-            .setMessage("存储路径已复制到剪贴板。")
-            .setPositiveButton("好", null)
-            .show();
+        new ChefDialog(this, "已复制", "存储路径已复制到剪贴板。").notice("知道了");
     }
 
     private void showAbout() {
-        new AlertDialog.Builder(this)
-            .setTitle("25小厨 Mobile")
-            .setMessage(
-                "SillyTavern 1.19.0\n"
-                    + "Node.js v24.22.1"
-            )
-            .setPositiveButton("关闭", null)
-            .show();
+        String appVersion = "—";
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            long build = Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+            appVersion = info.versionName + "（" + build + "）";
+        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
+            // Keep the About dialog available even if package metadata is unavailable.
+        }
+        new ChefDialog(this, "25小厨 Mobile",
+            "版本 " + appVersion + "\nSillyTavern 1.19.0\nNode.js v24.22.1").notice("关闭");
     }
 
     private void runAutomationIfRequested() {
@@ -1398,6 +1751,39 @@ public final class MainActivity extends Activity {
     }
 
     private final class ChefMascotView extends View {
+        private ValueAnimator animator;
+        private double motionTime;
+        private long previousFrame;
+
+        void setAnimating(boolean active) {
+            if (Build.VERSION.SDK_INT >= 26 && !ValueAnimator.areAnimatorsEnabled()) { active = false; }
+            if (active == (animator != null)) { return; }
+            if (active) {
+                previousFrame = 0;
+                animator = ValueAnimator.ofFloat(0, 1);
+                animator.setDuration(12000);
+                animator.setRepeatCount(ValueAnimator.INFINITE);
+                animator.setInterpolator(new LinearInterpolator());
+                animator.addUpdateListener(value -> {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (previousFrame > 0) { motionTime += Math.min((now - previousFrame) / 1000.0, 0.1); }
+                    previousFrame = now;
+                    invalidate();
+                });
+                animator.start();
+            } else {
+                animator.cancel();
+                animator = null;
+                invalidate();
+            }
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            setAnimating(false);
+            super.onDetachedFromWindow();
+        }
+
         ChefMascotView(Context context) {
             super(context);
             setContentDescription("小厨，陪你开启故事的厨师帽吉祥物");
@@ -1406,6 +1792,12 @@ public final class MainActivity extends Activity {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+            boolean reduced = Build.VERSION.SDK_INT >= 26 && !ValueAnimator.areAnimatorsEnabled();
+            MascotMotion.Pose pose = reduced ? new MascotMotion.Pose() : MascotMotion.at(motionTime);
+            float lookX = (float) pose.lookX;
+            float lookY = (float) pose.lookY;
+            float joy = (float) pose.joy;
+            float eyeOpen = (float) pose.eyeOpen;
             float scale = Math.min(getWidth() / 200f, getHeight() / 150f);
             float originX = (getWidth() - 200f * scale) / 2f;
             float originY = (getHeight() - 150f * scale) / 2f;
@@ -1465,6 +1857,9 @@ public final class MainActivity extends Activity {
 
             fill.setStyle(Paint.Style.FILL);
             fill.setColor(Color.rgb(255, 240, 214));
+            canvas.save();
+            canvas.translate((float) pose.headX * 2.5f, (float) (pose.headY - pose.bob));
+            canvas.rotate((float) (pose.headX * 0.04 * 180 / Math.PI), 100, 82);
             Path hat = new Path();
             hat.moveTo(67, 87);
             hat.cubicTo(43, 79, 45, 47, 70, 46);
@@ -1487,23 +1882,33 @@ public final class MainActivity extends Activity {
             stroke.setStrokeCap(Paint.Cap.ROUND);
             canvas.drawPath(band, stroke);
 
-            fill.setColor(Color.argb(38, 234, 164, 135));
+            canvas.translate(lookX * 5, lookY * 3);
+            fill.setColor(Color.argb(Math.round(255 * (0.15f + joy * 0.45f)), 234, 164, 135));
             canvas.drawOval(new RectF(70, 89, 82, 95), fill);
             canvas.drawOval(new RectF(118, 89, 130, 95), fill);
 
             stroke.setColor(Color.rgb(145, 107, 73));
-            stroke.setStrokeWidth(4.5f);
-            Path eyes = new Path();
-            eyes.moveTo(85, 81);
-            eyes.quadTo(85, 86, 85, 81);
-            eyes.moveTo(115, 81);
-            eyes.quadTo(115, 86, 115, 81);
-            canvas.drawPath(eyes, stroke);
+            fill.setColor(Color.rgb(145, 107, 73));
+            for (float eyeX : new float[] {85, 115}) {
+                if (eyeOpen <= 0.001f || pose.smilingEyes) {
+                    Path eye = new Path();
+                    eye.moveTo(eyeX - 3, 82 + eyeOpen);
+                    eye.quadTo(eyeX, 82 - eyeOpen * 5, eyeX + 3, 82 + eyeOpen);
+                    stroke.setStrokeWidth((float) pose.eyeLineWidth());
+                    canvas.drawPath(eye, stroke);
+                } else {
+                    float width = (float) pose.eyeWidth();
+                    float height = (float) pose.eyeHeight();
+                    canvas.drawOval(new RectF(eyeX - width / 2, 82 - height / 2,
+                        eyeX + width / 2, 82 + height / 2), fill);
+                }
+            }
             Path mouth = new Path();
             mouth.moveTo(96, 91);
-            mouth.quadTo(100, 98, 104, 91);
+            mouth.quadTo(100, 98 + joy * 3, 104, 91);
             stroke.setStrokeWidth(2.5f);
             canvas.drawPath(mouth, stroke);
+            canvas.restore();
             canvas.restore();
         }
     }

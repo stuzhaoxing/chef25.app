@@ -8,8 +8,21 @@ tab then loads `http://127.0.0.1:8123` in a persistent `WebView`.
 
 The mobile shell includes the home/start flow, runtime status, Tavern, local
 data path with copy action, Chinese usage guide, settings/about information,
-and persistent bottom navigation. Desktop port editing, reset, ZIP transfer
-and updates are not implemented in this feasibility app.
+and a push-aside drawer opened from the top-left menu or a left-edge pan.
+The drawer tracks horizontal dragging, has a scrollable menu and a fixed About
+entry at the bottom. The home shows startup status only on its primary button and opens the Tavern
+automatically once ready, provided the user has stayed on the home page. The light
+“返回小厨” bubble can be dragged and snaps to the nearer side in about 491 ms;
+a drag never triggers its return action. Reduced-motion settings disable the snap
+animation. The home mascot loops automatically while the home is
+visible and the app is active; system reduced-motion settings are respected.
+
+Settings includes a destructive local-data reset with an exact `确认重置` confirmation.
+If Node has started in this process, reset is deferred until a full app termination
+and relaunch; backgrounding is insufficient. Pending/failed resets block startup
+and retry on launch. See the [root README](../../README.md) for deletion scope
+and platform-specific termination steps. Port editing, ZIP transfer and updates
+remain unimplemented.
 
 Current emulator results, evidence hashes, build findings, and limits are in
 [`docs/android-node-runtime.md`](../../docs/android-node-runtime.md).

@@ -77,6 +77,7 @@ xcrun --sdk "$SDK_NAME" swiftc \
     -F "$FRAMEWORK_DIR" \
     -import-objc-header "$SCRIPT_DIR/NodeRunner.h" \
     "$SCRIPT_DIR/AppDelegate.swift" \
+    "$SCRIPT_DIR/MascotMotion.swift" \
     "$OUT_DIR/objects/NodeRunner.o" \
     -framework NodeMobile \
     -framework UIKit \

@@ -9,9 +9,21 @@ for `http://127.0.0.1:8123/version`, and then opens the original UI in
 
 The shell provides a Desktop-inspired home, runtime status, the Tavern entry,
 the app-private data directory, the Chinese usage guide, settings/about
-information, and persistent bottom navigation. It intentionally omits Desktop
-port editing, reset, ZIP transfer and updates until those operations have
-mobile-specific safety and UX.
+information, and a push-aside drawer opened from the top-left menu or a left-edge pan.
+The drawer tracks horizontal dragging, has a scrollable menu and a fixed About
+entry at the bottom. The home shows startup status only on its primary button and opens the Tavern
+automatically once ready, provided the user has stayed on the home page. The light
+“返回小厨” bubble can be dragged and snaps to the nearer side in about 491 ms;
+a drag never triggers its return action. Reduced-motion settings disable the snap
+animation. The home mascot loops automatically while the home is
+visible and the app is active; system reduced-motion settings are respected.
+
+Settings includes a destructive local-data reset with an exact `确认重置` confirmation.
+If Node has started in this process, reset is deferred until a full app termination
+and relaunch; backgrounding is insufficient. Pending/failed resets block startup
+and retry on launch. See the [root README](../../README.md) for deletion scope
+and platform-specific termination steps. Port editing, ZIP transfer and updates
+remain unimplemented.
 
 The committed source is a test harness, not a production client. Current
 simulator and iPhone results, evidence hashes, and known limits are recorded in
