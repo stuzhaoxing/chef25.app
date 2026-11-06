@@ -21,6 +21,8 @@ def run(command):
 class MascotMotionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if shutil.which("xcrun") is None:
+            raise unittest.SkipTest("Swift cross-platform check requires macOS xcrun")
         cls.temp = tempfile.TemporaryDirectory(prefix="chef25-mascot-test-")
         folder = Path(cls.temp.name)
         java_home = os.environ.get("JAVA_HOME")
@@ -31,6 +33,9 @@ class MascotMotionTests(unittest.TestCase):
             java_bin = matches[0].parent if matches else None
         javac = java_bin / "javac" if java_bin else shutil.which("javac")
         java = java_bin / "java" if java_bin else shutil.which("java")
+        if not javac or not java:
+            cls.temp.cleanup()
+            raise unittest.SkipTest("Swift cross-platform check requires JDK 17+")
         swift_runner = folder / "Runner.swift"
         swift_values = ", ".join(f"p.{name}" for name in FIELDS if name != "smilingEyes")
         # Keep field order identical in the two compiled programs.
